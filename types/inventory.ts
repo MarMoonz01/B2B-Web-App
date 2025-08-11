@@ -18,7 +18,7 @@ export interface BranchDetail {
   sizes: SizeDetail[];
 }
 
-// นี่คือข้อมูลหลักที่เราจะใช้แสดงผลในตาราง
+// ข้อมูลหลักที่เราจะใช้แสดงผลในตาราง
 export interface GroupedProduct {
   id: string; // คือชื่อรุ่น เช่น "MICHELIN PRIMACY 4"
   name: string;
@@ -26,11 +26,33 @@ export interface GroupedProduct {
   branches: BranchDetail[]; // รายละเอียดของทุกสาขาที่มีสินค้านี้
 }
 
-// Props สำหรับ Components
-export interface InventoryTableProps {
+// Props สำหรับ InventoryList (เดิมคือ InventoryTable)
+export interface InventoryListProps {
   inventory: GroupedProduct[];
 }
 
-export interface BranchStockDetailsProps {
+// Props สำหรับตารางแสดงรายละเอียด
+export interface InventoryDetailTableProps {
   branches: BranchDetail[];
+}
+
+// Props สำหรับส่วน Filter
+export interface SearchFiltersProps {
+  brands: string[];
+  selectedBrand: string;
+  setSelectedBrand: (brand: string) => void;
+  searchTerm: string;
+  setSearchTerm: (term: string) => void;
+  priceRange: string;
+  setPriceRange: (value: string) => void;
+  availability: string;
+  setAvailability: (value: string) => void;
+  promotionStatus: string;
+  setPromotionStatus: (value: string) => void;
+  stores: string[];
+  selectedStore: string;
+  setSelectedStore: (store: string) => void;
+  
+  onRefresh: () => void;
+  isLoading: boolean;
 }
