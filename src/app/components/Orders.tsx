@@ -1,316 +1,287 @@
 'use client';
 
-import { useState, useEffect } from 'react';
-import { collection, getDocs, updateDoc, doc, addDoc, serverTimestamp } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
+import { useEffect, useMemo, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Package, Clock, CheckCircle, XCircle, Truck, Eye, MoreVertical } from 'lucide-react';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from "@/components/ui/dropdown-menu";
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { Separator } from '@/components/ui/separator';
+import { Download, Store, CheckCircle2, Clock, XCircle, FileText, Search } from 'lucide-react';
+import { InventoryService, Order, OrderService } from '@/lib/services/InventoryService';
 
-interface OrderItem {
-  productName: string;
-  specification: string;
-  dotCode: string;
-  quantity: number;
-  unitPrice: number;
-  totalPrice: number;
+const thb = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 });
+
+interface OrdersProps {
+  myBranchId: string;
 }
 
-interface Order {
-  id: string;
-  orderNumber: string;
-  customerName: string;
-  customerBranch: string;
-  items: OrderItem[];
-  totalAmount: number;
-  status: 'pending' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled';
-  orderDate: Date;
-  deliveryDate?: Date;
-  notes?: string;
-}
-
-export default function Orders() {
+export default function Orders({ myBranchId }: OrdersProps) {
   const [orders, setOrders] = useState<Order[]>([]);
+  const [incoming, setIncoming] = useState<Order[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedStatus, setSelectedStatus] = useState<string>('all');
-  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
 
-  // Mock data for demo (ในระบบจริงจะดึงจาก Firestore)
-  useEffect(() => {
-    const mockOrders: Order[] = [
-      {
-        id: '1',
-        orderNumber: 'ORD-2025-001',
-        customerName: 'TyrePlus Ratchapruek',
-        customerBranch: 'Ratchapruek Branch',
-        items: [
-          {
-            productName: 'MICHELIN PRIMACY 4',
-            specification: '215/55R17 94V',
-            dotCode: '2324',
-            quantity: 4,
-            unitPrice: 3500,
-            totalPrice: 14000
-          },
-          {
-            productName: 'BRIDGESTONE TURANZA T005',
-            specification: '205/55R16 91V',
-            dotCode: '3424',
-            quantity: 2,
-            unitPrice: 2800,
-            totalPrice: 5600
-          }
-        ],
-        totalAmount: 19600,
-        status: 'pending',
-        orderDate: new Date('2025-01-10'),
-        notes: 'Urgent delivery requested'
-      },
-      {
-        id: '2',
-        orderNumber: 'ORD-2025-002',
-        customerName: 'Central Bangkok',
-        customerBranch: 'Silom Branch',
-        items: [
-          {
-            productName: 'GOODYEAR EAGLE F1',
-            specification: '225/45R18 95Y',
-            dotCode: '4524',
-            quantity: 8,
-            unitPrice: 4200,
-            totalPrice: 33600
-          }
-        ],
-        totalAmount: 33600,
-        status: 'processing',
-        orderDate: new Date('2025-01-09'),
-        deliveryDate: new Date('2025-01-12')
-      },
-      {
-        id: '3',
-        orderNumber: 'ORD-2025-003',
-        customerName: 'Northern Wheels',
-        customerBranch: 'Chiang Mai Branch',
-        items: [
-          {
-            productName: 'CONTINENTAL PREMIUMCONTACT 6',
-            specification: '195/65R15 91H',
-            dotCode: '1224',
-            quantity: 12,
-            unitPrice: 2500,
-            totalPrice: 30000
-          }
-        ],
-        totalAmount: 30000,
-        status: 'shipped',
-        orderDate: new Date('2025-01-08'),
-        deliveryDate: new Date('2025-01-11')
-      }
-    ];
-    
-    setOrders(mockOrders);
+  const [search, setSearch] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all'|'pending'|'confirmed'|'processing'|'shipped'|'delivered'|'cancelled'|'paid'>('all');
+  const [timeFilter, setTimeFilter] = useState<'all'|'7d'|'30d'|'90d'>('all');
+
+  const load = async () => {
+    setLoading(true);
+    const mine = await OrderService.getOrdersByBranch(myBranchId, 'buyer');
+    const inc = await OrderService.getOrdersByBranch(myBranchId, 'seller');
+    setOrders(mine);
+    setIncoming(inc);
     setLoading(false);
-  }, []);
-
-  const getStatusBadge = (status: Order['status']) => {
-    const statusConfig = {
-      pending: { label: 'Pending', className: 'bg-yellow-100 text-yellow-700 border-yellow-200' },
-      confirmed: { label: 'Confirmed', className: 'bg-blue-100 text-blue-700 border-blue-200' },
-      processing: { label: 'Processing', className: 'bg-purple-100 text-purple-700 border-purple-200' },
-      shipped: { label: 'Shipped', className: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
-      delivered: { label: 'Delivered', className: 'bg-green-100 text-green-700 border-green-200' },
-      cancelled: { label: 'Cancelled', className: 'bg-red-100 text-red-700 border-red-200' }
-    };
-    const config = statusConfig[status];
-    return <Badge variant="outline" className={config.className}>{config.label}</Badge>;
   };
 
-  const getStatusIcon = (status: Order['status']) => {
-    switch(status) {
-      case 'pending': return <Clock className="h-4 w-4 text-yellow-600" />;
-      case 'confirmed': return <CheckCircle className="h-4 w-4 text-blue-600" />;
-      case 'processing': return <Package className="h-4 w-4 text-purple-600" />;
-      case 'shipped': return <Truck className="h-4 w-4 text-indigo-600" />;
-      case 'delivered': return <CheckCircle className="h-4 w-4 text-green-600" />;
-      case 'cancelled': return <XCircle className="h-4 w-4 text-red-600" />;
+  useEffect(() => { load(); }, []);
+
+  const kpi = useMemo(() => {
+    const pending = orders.filter(o => o.status === 'pending').length;
+    const productCount = new Set(orders.flatMap(o => o.items.map(i => i.productName))).size;
+    return {
+      dealerNetwork: new Set(orders.flatMap(o => [o.sellerBranchId, o.buyerBranchId])).size,
+      yourProducts: productCount,
+      pendingOrders: pending,
+      monthlySpent: 0,
+    };
+  }, [orders]);
+
+  const filterOrders = (list: Order[]) => {
+    let res = [...list];
+    if (search) {
+      const q = search.toLowerCase();
+      res = res.filter(o =>
+        o.orderNumber.toLowerCase().includes(q) ||
+        o.sellerBranchName.toLowerCase().includes(q) ||
+        o.buyerBranchName.toLowerCase().includes(q) ||
+        o.items.some(i =>
+          i.productName.toLowerCase().includes(q) ||
+          `${i.specification} / DOT ${i.dotCode}`.toLowerCase().includes(q)
+        )
+      );
+    }
+    if (statusFilter !== 'all') res = res.filter(o => o.status === statusFilter);
+    if (timeFilter !== 'all') {
+      const days = timeFilter === '7d' ? 7 : timeFilter === '30d' ? 30 : 90;
+      const from = new Date(Date.now() - days * 86400_000);
+      res = res.filter(o => new Date(o.createdAt?.toDate?.() ?? o.orderDate) >= from);
+    }
+    res.sort((a, b) => (b.orderDate > a.orderDate ? 1 : -1));
+    return res;
+  };
+
+  const incomingFiltered = filterOrders(incoming);
+  const myOrdersFiltered = filterOrders(orders);
+
+  const statusBadge = (s: Order['status']) => {
+    const base = 'border text-xs';
+    switch (s) {
+      case 'pending':    return <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50"><Clock className="h-3 w-3 mr-1" /> Pending</Badge>;
+      case 'confirmed':  return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50">Confirmed</Badge>;
+      case 'processing': return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50">Processing</Badge>;
+      case 'shipped':    return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50">Shipped</Badge>;
+      case 'delivered':  return <Badge variant="outline" className="border-green-300 text-green-700 bg-green-50"><CheckCircle2 className="h-3 w-3 mr-1" /> Delivered</Badge>;
+      case 'paid':       return <Badge variant="outline" className="border-green-300 text-green-700 bg-green-50"><CheckCircle2 className="h-3 w-3 mr-1" /> Paid</Badge>;
+      case 'cancelled':  return <Badge variant="outline" className="border-red-300 text-red-700 bg-red-50"><XCircle className="h-3 w-3 mr-1" /> Cancelled</Badge>;
     }
   };
 
-  const handleStatusChange = async (orderId: string, newStatus: Order['status']) => {
-    // Update in Firestore (implementation needed)
-    setOrders(prev => 
-      prev.map(order => 
-        order.id === orderId ? { ...order, status: newStatus } : order
-      )
-    );
+  const exportOrder = (o: Order) => {
+    const blob = new Blob([JSON.stringify(o, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `${o.orderNumber}.json`; a.click();
+    URL.revokeObjectURL(url);
   };
 
-  const filteredOrders = selectedStatus === 'all' 
-    ? orders 
-    : orders.filter(order => order.status === selectedStatus);
-
-  const stats = {
-    total: orders.length,
-    pending: orders.filter(o => o.status === 'pending').length,
-    processing: orders.filter(o => o.status === 'processing' || o.status === 'confirmed').length,
-    shipped: orders.filter(o => o.status === 'shipped').length,
-    delivered: orders.filter(o => o.status === 'delivered').length
+  const handlePay = async (o: Order) => {
+    await OrderService.payOrder(o.id!);
+    await load(); // reload ทั้ง orders + incoming
   };
-
-  if (loading) {
-    return <div className="flex justify-center items-center h-64">Loading orders...</div>;
-  }
 
   return (
     <div className="space-y-6">
       <div>
-        <h1 className="text-2xl font-semibold">Orders Management</h1>
-        <p className="text-sm text-muted-foreground">Manage and track all your orders</p>
+        <h1 className="text-2xl font-semibold">Orders</h1>
+        <p className="text-muted-foreground">Manage your dealer operations and partnerships</p>
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4">
-        <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedStatus('all')}>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium">Total Orders</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            <div className="text-2xl font-bold">{stats.total}</div>
-          </CardContent>
-        </Card>
-        <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedStatus('pending')}>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium text-yellow-600">Pending</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            <div className="text-2xl font-bold">{stats.pending}</div>
-          </CardContent>
-        </Card>
-        <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedStatus('processing')}>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium text-purple-600">Processing</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            <div className="text-2xl font-bold">{stats.processing}</div>
-          </CardContent>
-        </Card>
-        <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedStatus('shipped')}>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium text-indigo-600">Shipped</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            <div className="text-2xl font-bold">{stats.shipped}</div>
-          </CardContent>
-        </Card>
-        <Card className="cursor-pointer hover:shadow-md transition-shadow" onClick={() => setSelectedStatus('delivered')}>
-          <CardHeader className="p-4 pb-2">
-            <CardTitle className="text-sm font-medium text-green-600">Delivered</CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            <div className="text-2xl font-bold">{stats.delivered}</div>
-          </CardContent>
-        </Card>
+      {/* KPI */}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">Dealer Network</div><div className="mt-1 text-2xl font-bold">{kpi.dealerNetwork}</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">Your Products</div><div className="mt-1 text-2xl font-bold">{kpi.yourProducts}</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">Pending Orders</div><div className="mt-1 text-2xl font-bold">{kpi.pendingOrders}</div></CardContent></Card>
+        <Card><CardContent className="p-4"><div className="text-sm text-muted-foreground">Monthly Spent</div><div className="mt-1 text-2xl font-bold">{thb.format(0)}</div></CardContent></Card>
       </div>
 
-      {/* Orders Table */}
+      {/* Toolbar */}
       <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Recent Orders</CardTitle>
-          <Button size="sm">Create Order</Button>
-        </CardHeader>
-        <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Order #</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead>Items</TableHead>
-                <TableHead>Total</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredOrders.map((order) => (
-                <TableRow key={order.id}>
-                  <TableCell className="font-medium">
-                    <div className="flex items-center gap-2">
-                      {getStatusIcon(order.status)}
-                      {order.orderNumber}
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div>
-                      <div className="font-medium">{order.customerName}</div>
-                      <div className="text-xs text-muted-foreground">{order.customerBranch}</div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm">
-                      {order.items.length} item{order.items.length > 1 ? 's' : ''}
-                      <div className="text-xs text-muted-foreground">
-                        {order.items.reduce((sum, item) => sum + item.quantity, 0)} units
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell className="font-semibold">
-                    ฿{order.totalAmount.toLocaleString()}
-                  </TableCell>
-                  <TableCell>
-                    <div className="text-sm">
-                      {order.orderDate.toLocaleDateString()}
-                      {order.deliveryDate && (
-                        <div className="text-xs text-muted-foreground">
-                          Delivery: {order.deliveryDate.toLocaleDateString()}
-                        </div>
-                      )}
-                    </div>
-                  </TableCell>
-                  <TableCell>{getStatusBadge(order.status)}</TableCell>
-                  <TableCell className="text-right">
-                    <DropdownMenu>
-                      <DropdownMenuTrigger asChild>
-                        <Button variant="ghost" size="icon" className="h-8 w-8">
-                          <MoreVertical className="h-4 w-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem onClick={() => setSelectedOrder(order)}>
-                          <Eye className="mr-2 h-4 w-4" />View Details
-                        </DropdownMenuItem>
-                        {order.status === 'pending' && (
-                          <>
-                            <DropdownMenuItem onClick={() => handleStatusChange(order.id, 'confirmed')}>
-                              <CheckCircle className="mr-2 h-4 w-4" />Confirm Order
-                            </DropdownMenuItem>
-                            <DropdownMenuItem onClick={() => handleStatusChange(order.id, 'cancelled')} className="text-red-600">
-                              <XCircle className="mr-2 h-4 w-4" />Cancel Order
-                            </DropdownMenuItem>
-                          </>
-                        )}
-                        {order.status === 'confirmed' && (
-                          <DropdownMenuItem onClick={() => handleStatusChange(order.id, 'processing')}>
-                            <Package className="mr-2 h-4 w-4" />Start Processing
-                          </DropdownMenuItem>
-                        )}
-                        {order.status === 'processing' && (
-                          <DropdownMenuItem onClick={() => handleStatusChange(order.id, 'shipped')}>
-                            <Truck className="mr-2 h-4 w-4" />Mark as Shipped
-                          </DropdownMenuItem>
-                        )}
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        <CardContent className="p-4 space-y-3">
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+            <div className="relative md:col-span-2">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Input className="pl-9" placeholder="Search orders..." value={search} onChange={(e) => setSearch(e.target.value)} />
+            </div>
+            <Select value={statusFilter} onValueChange={(v: any) => setStatusFilter(v)}>
+              <SelectTrigger><SelectValue placeholder="All Statuses" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Statuses</SelectItem>
+                <SelectItem value="pending">Pending</SelectItem>
+                <SelectItem value="paid">Paid</SelectItem>
+                <SelectItem value="confirmed">Confirmed</SelectItem>
+                <SelectItem value="processing">Processing</SelectItem>
+                <SelectItem value="shipped">Shipped</SelectItem>
+                <SelectItem value="delivered">Delivered</SelectItem>
+                <SelectItem value="cancelled">Cancelled</SelectItem>
+              </SelectContent>
+            </Select>
+            <Select value={timeFilter} onValueChange={(v: any) => setTimeFilter(v)}>
+              <SelectTrigger><SelectValue placeholder="All Time" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Time</SelectItem>
+                <SelectItem value="7d">Last 7 days</SelectItem>
+                <SelectItem value="30d">Last 30 days</SelectItem>
+                <SelectItem value="90d">Last 90 days</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <Tabs defaultValue="incoming">
+            <TabsList>
+              <TabsTrigger value="incoming">Incoming Orders ({incomingFiltered.length})</TabsTrigger>
+              <TabsTrigger value="myorders">My Orders ({myOrdersFiltered.length})</TabsTrigger>
+            </TabsList>
+
+            {/* Incoming */}
+            <TabsContent value="incoming" className="mt-3">
+              <Card className="border-blue-100 bg-blue-50/40">
+                <CardContent className="p-3 text-sm text-blue-700">
+                  Incoming Purchase Orders — Orders from other dealers requesting to buy your inventory. Review and approve/reject orders.
+                </CardContent>
+              </Card>
+
+              {incomingFiltered.length === 0 ? (
+                <EmptyOrders />
+              ) : (
+                <div className="mt-4 space-y-4">
+                  {incomingFiltered.map((o) => (
+                    <OrderCard key={o.id} order={o} side="incoming" onExport={() => exportOrder(o)} />
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* My Orders */}
+            <TabsContent value="myorders" className="mt-3">
+              <Card className="border-green-100 bg-green-50/40">
+                <CardContent className="p-3 text-sm text-green-700">
+                  Your Purchase Orders — Orders you’ve placed with other dealers.
+                </CardContent>
+              </Card>
+
+              {myOrdersFiltered.length === 0 ? (
+                <EmptyOrders />
+              ) : (
+                <div className="mt-4 space-y-4">
+                  {myOrdersFiltered.map((o) => (
+                    <OrderCard
+                      key={o.id}
+                      order={o}
+                      side="mine"
+                      onExport={() => exportOrder(o)}
+                      onPay={o.status === 'pending' ? () => handlePay(o) : undefined}
+                    />
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+          </Tabs>
         </CardContent>
       </Card>
     </div>
+  );
+}
+
+/* ---- Subcomponents ---- */
+function EmptyOrders() {
+  return (
+    <Card className="mt-3">
+      <CardContent className="py-14 text-center">
+        <FileText className="h-10 w-10 mx-auto text-slate-400" />
+        <p className="mt-2 text-muted-foreground">No orders</p>
+      </CardContent>
+    </Card>
+  );
+}
+
+function statusBadge(s: Order['status']) {
+  switch (s) {
+    case 'pending':    return <Badge variant="outline" className="border-amber-300 text-amber-700 bg-amber-50"><Clock className="h-3 w-3 mr-1" /> Pending</Badge>;
+    case 'confirmed':  return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50">Confirmed</Badge>;
+    case 'processing': return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50">Processing</Badge>;
+    case 'shipped':    return <Badge variant="outline" className="border-blue-300 text-blue-700 bg-blue-50">Shipped</Badge>;
+    case 'delivered':  return <Badge variant="outline" className="border-green-300 text-green-700 bg-green-50"><CheckCircle2 className="h-3 w-3 mr-1" /> Delivered</Badge>;
+    case 'paid':       return <Badge variant="outline" className="border-green-300 text-green-700 bg-green-50"><CheckCircle2 className="h-3 w-3 mr-1" /> Paid</Badge>;
+    case 'cancelled':  return <Badge variant="outline" className="border-red-300 text-red-700 bg-red-50"><XCircle className="h-3 w-3 mr-1" /> Cancelled</Badge>;
+  }
+}
+
+function OrderCard({
+  order, side, onExport, onPay,
+}: {
+  order: Order;
+  side: 'incoming' | 'mine';
+  onExport?: () => void;
+  onPay?: () => void;
+}) {
+  const thb = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 });
+  const destination = side === 'mine' ? `To: ${order.sellerBranchName}` : `From: ${order.buyerBranchName}`;
+  const rightTotal = (
+    <div className="text-right">
+      <div className="font-semibold">{thb.format(order.totalAmount)}</div>
+      <div className="text-xs text-muted-foreground">{order.orderDate}</div>
+    </div>
+  );
+
+  return (
+    <Card>
+      <CardContent className="p-0">
+        <div className="flex items-center justify-between px-4 py-3">
+          <div className="flex items-center gap-2">
+            <span className="font-medium">{order.orderNumber}</span>
+            {statusBadge(order.status)}
+          </div>
+          {rightTotal}
+        </div>
+        <Separator />
+        <div className="px-4 py-2 text-sm text-muted-foreground">{destination}</div>
+        <div className="px-4 py-3">
+          {order.items.slice(0, 1).map((it, idx) => (
+            <div key={idx}>
+              <div className="font-medium">{it.productName}</div>
+              <div className="text-xs text-muted-foreground">{it.specification} / DOT {it.dotCode}</div>
+            </div>
+          ))}
+          {order.notes && (
+            <div className="mt-3 text-sm">
+              <div className="font-medium mb-1">Order Notes</div>
+              <div className="text-muted-foreground">{order.notes}</div>
+            </div>
+          )}
+          <div className="mt-3 text-sm text-muted-foreground">Expected delivery: —</div>
+        </div>
+        <Separator />
+        <div className="px-4 py-3 flex items-center gap-2">
+          <Button variant="outline" size="sm">View Details</Button>
+          <Button variant="outline" size="sm" onClick={onExport}>
+            <Download className="h-4 w-4 mr-2" /> Export
+          </Button>
+          <div className="ml-auto">
+            {onPay && <Button size="sm" onClick={onPay}>Pay</Button>}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
   );
 }
