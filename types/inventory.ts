@@ -41,8 +41,21 @@ export interface SearchFiltersProps {
   brands: string[];
   selectedBrand: string;
   setSelectedBrand: (brand: string) => void;
+  
+  // เพิ่ม Category เข้ามา
+  categories: string[];
+  selectedCategory: string;
+  setSelectedCategory: (category: string) => void;
+
+  // เพิ่ม Status เข้ามา
+  statuses: string[];
+  selectedStatus: string;
+  setSelectedStatus: (status: string) => void;
+
   searchTerm: string;
   setSearchTerm: (term: string) => void;
+
+  // ส่วนนี้อาจจะไม่จำเป็นแล้วใน UI ใหม่ แต่เก็บไว้เผื่อใช้
   priceRange: string;
   setPriceRange: (value: string) => void;
   availability: string;

@@ -1,19 +1,20 @@
-import { Metadata } from 'next';
+import type { Metadata } from 'next';
 import './globals.css';
 
 export const metadata: Metadata = {
-  title: 'TyreChain - B2B Tire Inventory',
-  description: 'Real-time tire inventory management system',
+  title: 'DealerNet',
+  description: 'B2B Inventory Management',
 };
 
-interface RootLayoutProps {
+export default function RootLayout({
+  children,
+}: {
   children: React.ReactNode;
-}
-
-export default function RootLayout({ children }: RootLayoutProps) {
+}) {
   return (
     <html lang="en">
-      <body className="bg-gray-50">
+      {/* body จะไม่มี class bg-gray-50 แล้ว เพราะจะไปกำหนดใน page หลักแทน */}
+      <body> 
         {children}
       </body>
     </html>

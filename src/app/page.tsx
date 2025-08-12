@@ -1,255 +1,71 @@
 'use client';
 
-import { useState, useEffect, useMemo, JSX } from 'react';
-import { collection, getDocs, doc, getDoc } from 'firebase/firestore';
-import { db } from '@/lib/firebase';
-import Header from '@/src/app/components/Header';
-import SearchFilters from '@/src/app/components/SearchFilters';
-import InventoryTable from '@/src/app/components/InventoryTable';
-import { GroupedProduct } from '@/types/inventory';
-import { Package, TrendingUp, AlertTriangle, CheckCircle2 } from 'lucide-react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import InventorySkeleton from '@/src/app/components/InventorySkeleton';
+import { useState } from 'react';
+import Sidebar from '@/src/app/components/Sidebar';
+import MyInventory from '@/src/app/components/MyInventory';
+import { Menu, X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 
-export default function Home(): JSX.Element {
-  const [inventory, setInventory] = useState<GroupedProduct[]>([]);
-  const [loading, setLoading] = useState(true);
+export default function Home() {
+  const [currentView, setCurrentView] = useState('inventory');
+  const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false); // <--- สร้าง State ที่นี่
 
-  // State สำหรับจัดการ Filter ทั้งหมด
-  const [allStores, setAllStores] = useState<string[]>([]);
-  const [selectedStore, setSelectedStore] = useState('All Stores');
-  const [selectedBrand, setSelectedBrand] = useState('All Brands');
-  const [searchTerm, setSearchTerm] = useState('');
-  const [priceRange, setPriceRange] = useState('All');
-  const [availability, setAvailability] = useState('All');
-  const [promotionStatus, setPromotionStatus] = useState('All');
-
-  const fetchAndGroupInventory = async (storeIds: string[]) => {
-    try {
-      setLoading(true);
-      const productGroups = new Map<string, GroupedProduct>();
-
-      // ดึงข้อมูลชื่อสาขาทั้งหมดก่อน
-      const storesCollection = await getDocs(collection(db, 'stores'));
-      const storeNames: { [id: string]: string } = {};
-      storesCollection.docs.forEach(doc => {
-        storeNames[doc.id] = doc.data().branchName || doc.id;
-      });
-      setAllStores(Object.values(storeNames));
-
-      for (const storeId of storeIds) {
-        const branchName = storeNames[storeId] || storeId;
-        const brandsRef = collection(db, 'stores', storeId, 'inventory');
-        const brandSnapshots = await getDocs(brandsRef);
-
-        for (const brandDoc of brandSnapshots.docs) {
-          const modelsRef = collection(brandDoc.ref, 'models');
-          const modelSnapshots = await getDocs(modelsRef);
-
-          for (const modelDoc of modelSnapshots.docs) {
-            const modelData = modelDoc.data();
-            const groupKey = `${brandDoc.id} ${modelData.modelName}`;
-
-            if (!productGroups.has(groupKey)) {
-              productGroups.set(groupKey, { id: groupKey, name: groupKey, totalAvailable: 0, branches: [] });
-            }
-            const currentGroup = productGroups.get(groupKey)!;
-
-            let currentBranch = currentGroup.branches.find(b => b.branchName === branchName);
-            if (!currentBranch) {
-              currentBranch = { branchName: branchName, sizes: [] };
-              currentGroup.branches.push(currentBranch);
-            }
-            
-            const variantsRef = collection(modelDoc.ref, 'variants');
-            const variantSnapshots = await getDocs(variantsRef);
-
-            for (const variantDoc of variantSnapshots.docs) {
-              const variantData = variantDoc.data();
-              const specification = `${variantData.size} ${variantData.loadIndex || ''}`.trim();
-              const sizeData = { specification: specification, dots: [] };
-
-              const dotsRef = collection(variantDoc.ref, 'dots');
-              const dotSnapshots = await getDocs(dotsRef);
-              
-              dotSnapshots.forEach(dotDoc => {
-                const dotData = dotDoc.data();
-                currentGroup.totalAvailable += dotData.qty;
-                (sizeData.dots as any).push({
-                  dotCode: dotDoc.id,
-                  qty: dotData.qty,
-                  basePrice: variantData.basePrice,
-                  promoPrice: dotData.promoPrice,
-                });
-              });
-              
-              if (sizeData.dots.length > 0) {
-                (currentBranch.sizes as any).push(sizeData);
-              }
-            }
-          }
-        }
-      }
-      const groupedResult = Array.from(productGroups.values());
-      setInventory(groupedResult);
-    } catch (err) {
-      console.error('Failed to fetch data:', err);
-    } finally {
-      setLoading(false);
+  const renderContent = () => {
+    switch (currentView) {
+      case 'inventory':
+        return <MyInventory />;
+      // เพิ่ม case อื่นๆ ตามต้องการ
+      // case 'dashboard':
+      //   return <Dashboard />;
+      default:
+        return <MyInventory />;
     }
   };
 
-  useEffect(() => {
-    fetchAndGroupInventory(['tyreplus_ratchapruek']);
-  }, []);
-
-  const availableBrands = useMemo(() => {
-    const brands = new Set(inventory.map(item => item.name.split(' ')[0]));
-    return Array.from(brands).sort();
-  }, [inventory]);
-
-  const filteredInventory = useMemo(() => {
-    let result = [...inventory];
-
-    // Filter by Store/Branch
-    if (selectedStore !== 'All Stores') {
-      result = result
-        .map(product => {
-          const filteredBranches = product.branches.filter(branch => branch.branchName === selectedStore);
-          if (filteredBranches.length > 0) {
-            const newTotalAvailable = filteredBranches.reduce((sum, branch) => 
-              sum + branch.sizes.reduce((sizeSum, size) => 
-                sizeSum + size.dots.reduce((dotSum, dot) => dotSum + dot.qty, 0), 0), 0);
-            return { ...product, branches: filteredBranches, totalAvailable: newTotalAvailable };
-          }
-          return null;
-        })
-        .filter((product): product is GroupedProduct => product !== null && product.totalAvailable > 0);
-    }
-
-    if (selectedBrand !== 'All Brands') {
-      result = result.filter(item => item.name.startsWith(selectedBrand));
-    }
-
-    if (availability === 'inStock') {
-      result = result.filter(item => item.totalAvailable > 0);
-    } else if (availability === 'lowStock') {
-      result = result.filter(item => item.totalAvailable > 0 && item.totalAvailable <= 10);
-    }
-    
-    if (promotionStatus === 'onPromo') {
-      result = result.filter(item => 
-        item.branches.some(b => b.sizes.some(s => s.dots.some(d => d.promoPrice && d.promoPrice > 0)))
-      );
-    }
-
-    if (priceRange !== 'All') {
-      result = result.filter(item => 
-        item.branches.some(b => b.sizes.some(s => s.dots.some(d => {
-          const price = d.promoPrice || d.basePrice;
-          if (priceRange === '<2000') return price < 2000;
-          if (priceRange === '2000-5000') return price >= 2000 && price <= 5000;
-          if (priceRange === '>5000') return price > 5000;
-          return false;
-        })))
-      );
-    }
-
-    if (searchTerm) {
-      const lowercasedTerm = searchTerm.toLowerCase();
-      result = result.filter(item => 
-        item.name.toLowerCase().includes(lowercasedTerm) ||
-        item.branches.some(b => b.sizes.some(s => s.specification.toLowerCase().includes(lowercasedTerm)))
-      );
-    }
-
-    return result.sort((a, b) => a.name.localeCompare(b.name));
-  }, [inventory, selectedStore, selectedBrand, searchTerm, priceRange, availability, promotionStatus]);
-  
-  const summaryStats = useMemo(() => {
-    const currentInventory = filteredInventory;
-    const totalStock = currentInventory.reduce((sum, item) => sum + item.totalAvailable, 0);
-    const lowStockCount = currentInventory.filter(item => item.totalAvailable > 0 && item.totalAvailable <= 10).length;
-    return {
-      totalProducts: currentInventory.length,
-      totalStock,
-      lowStockCount,
-    };
-  }, [filteredInventory]);
-
   return (
     <div className="min-h-screen bg-slate-50">
-      <Header />
-      <main className="container mx-auto max-w-7xl px-4 py-6 space-y-4">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Products Showing</CardTitle>
-              <Package className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{summaryStats.totalProducts}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Total Units Showing</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{summaryStats.totalStock.toLocaleString()}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">In Stock</CardTitle>
-              <CheckCircle2 className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold">{filteredInventory.filter(item => item.totalAvailable > 0).length}</div>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Low Stock Alerts</CardTitle>
-              <AlertTriangle className="h-4 w-4 text-muted-foreground" />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-yellow-600">{summaryStats.lowStockCount}</div>
-            </CardContent>
-          </Card>
-        </div>
+      <div className="flex">
+        <Sidebar 
+            currentView={currentView} 
+            setCurrentView={setCurrentView}
+            isMobileMenuOpen={isMobileMenuOpen} // <--- ส่ง State ลงไป
+            setIsMobileMenuOpen={setIsMobileMenuOpen} // <--- ส่ง Setter function ลงไป
+            // Dummy props เพิ่มเติม (ควรแทนที่ด้วยข้อมูลจริงในอนาคต)
+            branches={[]}
+            orders={[]}
+            selectedBranch={''}
+            setSelectedBranch={() => {}}
+        />
 
-        <Card>
-            <CardHeader>
-                <SearchFilters
-                  brands={availableBrands}
-                  selectedBrand={selectedBrand}
-                  setSelectedBrand={setSelectedBrand}
-                  searchTerm={searchTerm}
-                  setSearchTerm={setSearchTerm}
-                  stores={allStores}
-                  selectedStore={selectedStore}
-                  setSelectedStore={setSelectedStore}
-                  priceRange={priceRange}
-                  setPriceRange={setPriceRange}
-                  availability={availability}
-                  setAvailability={setAvailability}
-                  promotionStatus={promotionStatus}
-                  setPromotionStatus={setPromotionStatus}
-                  onRefresh={() => fetchAndGroupInventory(['tyreplus_ratchapruek'])}
-                  isLoading={loading}
-                />
-            </CardHeader>
-            <CardContent>
-                {loading ? (
-                    <InventorySkeleton />
-                ) : (
-                    <InventoryTable inventory={filteredInventory} />
-                )}
-            </CardContent>
-        </Card>
-      </main>
+        {/* Main Content Area */}
+        <main className="flex-1 lg:ml-64 transition-all duration-300 ease-in-out">
+          {/* Mobile Header */}
+          <header className="lg:hidden sticky top-0 z-30 flex h-14 items-center gap-4 border-b bg-white/80 backdrop-blur-sm px-4">
+              <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8"
+                  onClick={() => setIsMobileMenuOpen(true)}
+              >
+                  <Menu className="h-5 w-5" />
+                  <span className="sr-only">Open Sidebar</span>
+              </Button>
+              <h1 className="flex-1 text-md font-semibold">DealerNet</h1>
+          </header>
+
+          <div className="container mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
+            {renderContent()}
+          </div>
+        </main>
+
+        {/* Mobile Menu Overlay */}
+        {isMobileMenuOpen && (
+          <div
+            className="lg:hidden fixed inset-0 bg-black bg-opacity-50 z-40"
+            onClick={() => setIsMobileMenuOpen(false)}
+          />
+        )}
+      </div>
     </div>
   );
 }
