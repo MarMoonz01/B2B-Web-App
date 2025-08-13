@@ -42,7 +42,7 @@ function AppContent() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50">
+    <div className="min-h-screen bg-gradient-to-br from-background via-muted/20 to-background">
       <div className="flex">
         <Sidebar
           currentView={currentView}
@@ -54,7 +54,7 @@ function AppContent() {
           setSelectedBranch={setSelectedBranchId}
         />
         <main className="flex-1 lg:ml-64 transition-all duration-300 ease-in-out">
-          <div className="container mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
+          <div className="container mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
             {renderContent()}
           </div>
         </main>

@@ -284,73 +284,83 @@ export default function MyInventory() {
   return (
     <div className="space-y-4">
       <div>
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-4 gap-3">
+        <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-6 gap-4">
           <div>
-            <h1 className="text-2xl font-semibold">My Inventory</h1>
-            <p className="text-sm text-muted-foreground">Manage your branch operations and inventory.</p>
+            <h1 className="text-3xl font-bold text-foreground mb-2">My Inventory</h1>
+            <p className="text-muted-foreground">Manage your branch operations and inventory with real-time insights.</p>
           </div>
-          <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm">
-              <Download className="h-4 w-4 mr-2" />Export
+          <div className="flex items-center gap-3">
+            <Button variant="outline" className="focus-ring hover-lift">
+              <Download className="h-4 w-4 mr-2" />
+              Export Data
             </Button>
-            <Button size="sm">
-              <Plus className="h-4 w-4 mr-2" />Add Product
+            <Button className="gradient-primary focus-ring hover-lift shadow-md">
+              <Plus className="h-4 w-4 mr-2" />
+              Add Product
             </Button>
           </div>
         </div>
         
         {/* Stats Cards */}
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardHeader className="p-4 flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Total Products</CardTitle>
-              <Package className="h-4 w-4 text-muted-foreground" />
+        <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4 mb-8">
+          <Card className="hover-lift gradient-card border-0 shadow-sm">
+            <CardHeader className="p-6 flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-sm font-medium text-muted-foreground">Total Products</CardTitle>
+              <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center">
+                <Package className="h-5 w-5 text-blue-600" />
+              </div>
             </CardHeader>
-            <CardContent className='p-4 pt-0'>
-              <div className="text-2xl font-bold">{inventory.length}</div>
-              <p className="text-xs text-muted-foreground">Unique SKUs</p>
+            <CardContent className='p-6 pt-0'>
+              <div className="text-3xl font-bold text-foreground mb-1">{inventory.length}</div>
+              <p className="text-sm text-muted-foreground">Unique SKUs</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="p-4 flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Total Stock</CardTitle>
-              <Package className="h-4 w-4 text-muted-foreground" />
+          <Card className="hover-lift gradient-card border-0 shadow-sm">
+            <CardHeader className="p-6 flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-sm font-medium text-muted-foreground">Total Stock</CardTitle>
+              <div className="w-10 h-10 rounded-xl bg-emerald-100 flex items-center justify-center">
+                <Package className="h-5 w-5 text-emerald-600" />
+              </div>
             </CardHeader>
-            <CardContent className='p-4 pt-0'>
-              <div className="text-2xl font-bold">{totalStock.toLocaleString()}</div>
-              <p className="text-xs text-muted-foreground">Units available</p>
+            <CardContent className='p-6 pt-0'>
+              <div className="text-3xl font-bold text-foreground mb-1">{totalStock.toLocaleString()}</div>
+              <p className="text-sm text-muted-foreground">Units available</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="p-4 flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Low Stock Alert</CardTitle>
-              <FileText className="h-4 w-4 text-muted-foreground" />
+          <Card className="hover-lift gradient-card border-0 shadow-sm">
+            <CardHeader className="p-6 flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-sm font-medium text-muted-foreground">Low Stock Alert</CardTitle>
+              <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
+                <FileText className="h-5 w-5 text-amber-600" />
+              </div>
             </CardHeader>
-            <CardContent className='p-4 pt-0'>
-              <div className="text-2xl font-bold text-orange-500">{lowStockCount}</div>
-              <p className="text-xs text-muted-foreground">Items need restock</p>
+            <CardContent className='p-6 pt-0'>
+              <div className="text-3xl font-bold text-amber-600 mb-1">{lowStockCount}</div>
+              <p className="text-sm text-muted-foreground">Items need restock</p>
             </CardContent>
           </Card>
-          <Card>
-            <CardHeader className="p-4 flex flex-row items-center justify-between pb-2">
-              <CardTitle className="text-sm font-medium">Out of Stock</CardTitle>
-              <TrendingUp className="h-4 w-4 text-muted-foreground" />
+          <Card className="hover-lift gradient-card border-0 shadow-sm">
+            <CardHeader className="p-6 flex flex-row items-center justify-between pb-3">
+              <CardTitle className="text-sm font-medium text-muted-foreground">Out of Stock</CardTitle>
+              <div className="w-10 h-10 rounded-xl bg-red-100 flex items-center justify-center">
+                <TrendingUp className="h-5 w-5 text-red-600" />
+              </div>
             </CardHeader>
-            <CardContent className='p-4 pt-0'>
-              <div className="text-2xl font-bold text-red-600">{outOfStockCount}</div>
-              <p className="text-xs text-muted-foreground">Items unavailable</p>
+            <CardContent className='p-6 pt-0'>
+              <div className="text-3xl font-bold text-red-600 mb-1">{outOfStockCount}</div>
+              <p className="text-sm text-muted-foreground">Items unavailable</p>
             </CardContent>
           </Card>
         </div>
       </div>
 
       {/* Search & Filters */}
-      <Card>
-        <CardHeader className="p-4 flex flex-row items-center justify-between">
-          <CardTitle className='text-base font-semibold'>Search & Filters</CardTitle>
+      <Card className="hover-lift border-0 shadow-sm">
+        <CardHeader className="p-6 flex flex-row items-center justify-between">
+          <CardTitle className='text-lg font-semibold text-foreground'>Search & Filters</CardTitle>
           <ViewSwitcher viewMode={viewMode} setViewMode={setViewMode} />
         </CardHeader>
-        <CardContent className="px-4 pb-4">
+        <CardContent className="px-6 pb-6">
           <SearchFilters
             brands={availableBrands}
             selectedBrand={selectedBrand}
@@ -372,7 +382,7 @@ export default function MyInventory() {
       {loading ? (
         <InventorySkeleton />
       ) : (
-        <div className="mt-4">
+        <div className="mt-6">
           {viewMode === 'card' && <InventoryTable inventory={filteredInventory} />}
           {viewMode === 'table' && <FlatInventoryTable inventory={filteredInventory} />}
           {viewMode === 'matrix' && <InventoryMatrixView inventory={filteredInventory} />}

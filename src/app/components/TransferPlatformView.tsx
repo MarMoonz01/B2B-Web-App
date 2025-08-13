@@ -309,43 +309,46 @@ export default function TransferPlatformView({
   return (
     <div className="space-y-6">
       {/* Header + KPIs */}
-      <div className="rounded-2xl bg-gradient-to-b from-violet-50 to-white p-4 md:p-6 border">
-        <div className="flex items-center justify-between flex-wrap gap-2">
+      <div className="rounded-2xl bg-gradient-to-br from-primary/5 via-primary/3 to-background p-6 md:p-8 border-0 shadow-lg">
+        <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
-            <h1 className="text-2xl font-semibold">Inter-Branch Transfer</h1>
-            <p className="text-muted-foreground">Browse and request inventory from partner branches.</p>
+            <h1 className="text-3xl font-bold text-foreground mb-2">Inter-Branch Transfer</h1>
+            <p className="text-muted-foreground text-lg">Browse and request inventory from partner branches with ease.</p>
           </div>
-          <div className="flex gap-2 text-sm text-slate-600">
-            <Badge variant="secondary" className="gap-1">
-              <Store className="h-3.5 w-3.5" />
+          <div className="flex gap-3 text-sm">
+            <Badge variant="secondary" className="gap-2 px-3 py-2 bg-white/80 border-0 shadow-sm">
+              <Store className="h-4 w-4" />
               {kpi.activeBranches} branches
             </Badge>
-            <Badge variant="secondary" className="gap-1">
-              <ShoppingCart className="h-3.5 w-3.5" />
+            <Badge variant="secondary" className="gap-2 px-3 py-2 bg-white/80 border-0 shadow-sm">
+              <ShoppingCart className="h-4 w-4" />
               {kpi.products} products
             </Badge>
 
             {/* Cart Trigger */}
             <Sheet open={isCartOpen} onOpenChange={setIsCartOpen}>
               <SheetTrigger asChild>
-                <Button variant="default" className="gap-2">
+                <Button className="gap-2 gradient-primary shadow-md hover-lift focus-ring">
                   <ShoppingCart className="h-4 w-4" />
                   Transfer Cart ({cartCount}) · ฿{cartTotal.toLocaleString()}
                 </Button>
               </SheetTrigger>
               <SheetContent side="right" className="w-full sm:max-w-md">
                 <SheetHeader>
-                  <SheetTitle>Transfer Cart</SheetTitle>
+                  <SheetTitle className="text-xl">Transfer Cart</SheetTitle>
                 </SheetHeader>
                 <div className="mt-4 flex flex-col h-[90%]">
                   <ScrollArea className="flex-1 pr-2">
                     {cart.length === 0 ? (
-                      <div className="text-center text-sm text-muted-foreground mt-12">No items</div>
+                      <div className="text-center text-muted-foreground mt-12">
+                        <ShoppingCart className="h-12 w-12 mx-auto mb-4 opacity-50" />
+                        <p>No items in cart</p>
+                      </div>
                     ) : (
                       <div className="space-y-4">
                         {cart.map((it) => (
-                          <Card key={it.id} className="border">
-                            <CardContent className="p-3">
+                          <Card key={it.id} className="border-0 shadow-sm hover-lift">
+                            <CardContent className="p-4">
                               <div className="flex items-start justify-between gap-3">
                                 <div className="flex-1">
                                   <div className="font-medium text-sm">{it.productName}</div>
@@ -360,7 +363,7 @@ export default function TransferPlatformView({
                                     {it.sizeSpec} · DOT {it.dotCode}
                                   </div>
                                 </div>
-                                <Button variant="ghost" size="icon" onClick={() => removeItem(it.id)}>
+                                <Button variant="ghost" size="icon" className="focus-ring" onClick={() => removeItem(it.id)}>
                                   <Trash2 className="h-4 w-4" />
                                 </Button>
                               </div>
@@ -373,7 +376,7 @@ export default function TransferPlatformView({
                                   <Button
                                     size="icon"
                                     variant="outline"
-                                    className="h-8 w-8"
+                                    className="h-8 w-8 focus-ring"
                                     onClick={() => updateQty(it.id, -1)}
                                     disabled={it.qty <= 1}
                                   >
@@ -383,7 +386,7 @@ export default function TransferPlatformView({
                                   <Button
                                     size="icon"
                                     variant="outline"
-                                    className="h-8 w-8"
+                                    className="h-8 w-8 focus-ring"
                                     onClick={() => updateQty(it.id, 1)}
                                     disabled={it.qty >= it.maxQty}
                                   >
@@ -403,22 +406,22 @@ export default function TransferPlatformView({
                     )}
                   </ScrollArea>
 
-                  <Separator className="my-3" />
+                  <Separator className="my-4" />
 
-                  <div className="space-y-2">
+                  <div className="space-y-3">
                     <div className="flex items-center justify-between text-sm">
                       <div className="text-muted-foreground">Items</div>
                       <div className="font-medium">{cartCount}</div>
                     </div>
-                    <div className="flex items-center justify-between text-base">
+                    <div className="flex items-center justify-between text-lg">
                       <div className="font-semibold">Total</div>
                       <div className="font-semibold">฿{cartTotal.toLocaleString()}</div>
                     </div>
-                    <div className="flex gap-2 pt-2">
-                      <Button className="flex-1" disabled={submitting || cart.length === 0} onClick={submitAllRequests}>
+                    <div className="flex gap-3 pt-3">
+                      <Button className="flex-1 gradient-primary focus-ring" disabled={submitting || cart.length === 0} onClick={submitAllRequests}>
                         {submitting ? 'Submitting...' : 'Submit Requests'}
                       </Button>
-                      <Button variant="outline" className="flex-1" onClick={clearCart} disabled={cart.length === 0}>
+                      <Button variant="outline" className="flex-1 focus-ring" onClick={clearCart} disabled={cart.length === 0}>
                         Clear
                       </Button>
                     </div>
@@ -430,55 +433,63 @@ export default function TransferPlatformView({
           </div>
         </div>
 
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4">
-          <Card className="shadow-none">
-            <CardContent className="p-4">
-              <div className="text-xs text-slate-500 flex items-center gap-1">
-                <TrendingDown className="h-3 w-3" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-8">
+          <Card className="border-0 shadow-sm bg-white/60 hover-lift">
+            <CardContent className="p-5">
+              <div className="text-xs text-muted-foreground flex items-center gap-2 mb-3">
+                <div className="w-6 h-6 rounded-lg bg-blue-100 flex items-center justify-center">
+                  <TrendingDown className="h-3 w-3 text-blue-600" />
+                </div>
                 Avg. wholesale
               </div>
-              <div className="text-xl font-semibold mt-2">฿{kpi.avgPrice.toLocaleString()}</div>
+              <div className="text-2xl font-bold text-foreground">฿{kpi.avgPrice.toLocaleString()}</div>
             </CardContent>
           </Card>
-          <Card className="shadow-none">
-            <CardContent className="p-4">
-              <div className="text-xs text-slate-500 flex items-center gap-1">
-                <Tag className="h-3 w-3" />
+          <Card className="border-0 shadow-sm bg-white/60 hover-lift">
+            <CardContent className="p-5">
+              <div className="text-xs text-muted-foreground flex items-center gap-2 mb-3">
+                <div className="w-6 h-6 rounded-lg bg-emerald-100 flex items-center justify-center">
+                  <Tag className="h-3 w-3 text-emerald-600" />
+                </div>
                 Promotional items
               </div>
-              <div className="text-xl font-semibold mt-2">{kpi.promoCount}</div>
+              <div className="text-2xl font-bold text-foreground">{kpi.promoCount}</div>
             </CardContent>
           </Card>
-          <Card className="shadow-none">
-            <CardContent className="p-4">
-              <div className="text-xs text-slate-500 flex items-center gap-1">
-                <Factory className="h-3 w-3" />
+          <Card className="border-0 shadow-sm bg-white/60 hover-lift">
+            <CardContent className="p-5">
+              <div className="text-xs text-muted-foreground flex items-center gap-2 mb-3">
+                <div className="w-6 h-6 rounded-lg bg-purple-100 flex items-center justify-center">
+                  <Factory className="h-3 w-3 text-purple-600" />
+                </div>
                 Active branches
               </div>
-              <div className="text-xl font-semibold mt-2">{kpi.activeBranches}</div>
+              <div className="text-2xl font-bold text-foreground">{kpi.activeBranches}</div>
             </CardContent>
           </Card>
-          <Card className="shadow-none">
-            <CardContent className="p-4">
-              <div className="text-xs text-slate-500 flex items-center gap-1">
-                <Package className="h-3 w-3" />
+          <Card className="border-0 shadow-sm bg-white/60 hover-lift">
+            <CardContent className="p-5">
+              <div className="text-xs text-muted-foreground flex items-center gap-2 mb-3">
+                <div className="w-6 h-6 rounded-lg bg-amber-100 flex items-center justify-center">
+                  <Package className="h-3 w-3 text-amber-600" />
+                </div>
                 Products available
               </div>
-              <div className="text-xl font-semibold mt-2">{kpi.products}</div>
+              <div className="text-2xl font-bold text-foreground">{kpi.products}</div>
             </CardContent>
           </Card>
         </div>
       </div>
 
       {/* Filter bar */}
-      <Card>
-        <CardContent className="p-4">
-          <div className="flex flex-col md:flex-row gap-3 md:items-center">
+      <Card className="border-0 shadow-sm hover-lift">
+        <CardContent className="p-6">
+          <div className="flex flex-col md:flex-row gap-4 md:items-center">
             <div className="relative md:flex-1">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
               <Input
                 placeholder="Search products, brands, sizes..."
-                className="pl-9"
+                className="pl-11 h-11 focus-ring"
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
               />
@@ -488,17 +499,18 @@ export default function TransferPlatformView({
               <div className="flex items-center gap-2">
                 <Checkbox
                   id="inStockOnly"
+                  className="focus-ring"
                   checked={inStockOnly}
                   onCheckedChange={(v) => setInStockOnly(Boolean(v))}
                 />
-                <Label htmlFor="inStockOnly" className="text-sm">
+                <Label htmlFor="inStockOnly" className="text-sm font-medium">
                   In stock only
                 </Label>
               </div>
 
               <div className="flex items-center gap-2">
-                <Checkbox id="promoOnly" checked={promoOnly} onCheckedChange={(v) => setPromoOnly(Boolean(v))} />
-                <Label htmlFor="promoOnly" className="text-sm">
+                <Checkbox id="promoOnly" className="focus-ring" checked={promoOnly} onCheckedChange={(v) => setPromoOnly(Boolean(v))} />
+                <Label htmlFor="promoOnly" className="text-sm font-medium">
                   On promo
                 </Label>
               </div>
