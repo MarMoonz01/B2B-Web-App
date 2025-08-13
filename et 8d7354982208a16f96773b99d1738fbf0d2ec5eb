@@ -1,0 +1,59 @@
+[33mcommit 8d7354982208a16f96773b99d1738fbf0d2ec5eb[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mmain[m[33m)[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Wed Aug 13 17:18:53 2025 +0700
+
+    Remove service account key from tracking
+
+[33mcommit ab20a3ca73b60650b87e98412e9616b1eb7e8070[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Wed Aug 13 17:16:09 2025 +0700
+
+    เพิ่มหน้า Transfer Platform และแก้ไข Sidebar
+
+[33mcommit 2d6792a38223cd6ebd12f6f2b5e91eec93609577[m[33m ([m[1;31morigin/main[m[33m)[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Tue Aug 12 22:44:02 2025 +0700
+
+    marketplace and order
+
+[33mcommit 9796a5499c4742c48f2389ef0601ad2f4af4de11[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Tue Aug 12 14:35:07 2025 +0700
+
+    chore: ignore service-account-key.json
+
+[33mcommit f5e292c45ca3a705e26abdadda25c3377e3864a9[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Tue Aug 12 14:32:03 2025 +0700
+
+    Make an order view and connect service
+
+[33mcommit 85d67169618d1c1f2bc4293580267b7a1945cb4a[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Tue Aug 12 11:47:15 2025 +0700
+
+    Feat: Redesign MyInventory page and remove secrets
+
+[33mcommit a20a077a50ce9fd43cc92c5a40bd47799b917de6[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Mon Aug 11 22:45:56 2025 +0700
+
+    feat: Redesign UI with shadcn and implement advanced filters
+
+[33mcommit 48bc626d8e314cfab0420e66c9ae46e16ed97359[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Mon Aug 11 19:27:00 2025 +0700
+
+    Finished implementing the filter feature
+
+[33mcommit b5f5700b9e6837e10579dd68602b72cc951eede6[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Mon Aug 11 18:35:31 2025 +0700
+
+    Initial commit: Setup project and all features
+
+[33mcommit 4e4e913d8cf25a941048411490a06e8cbc807cfb[m
+Author: MarMoonz01 <pannathorn.ta@gmail.com>
+Date:   Mon Aug 11 13:51:45 2025 +0700
+
+    Initial commit from Create Next App

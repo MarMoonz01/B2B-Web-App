@@ -1,82 +1,177 @@
+/* eslint-disable no-console */
 const admin = require('firebase-admin');
 const fs = require('fs');
 const csv = require('csv-parser');
 
-// --- การตั้งค่า ---
-const serviceAccount = require('./service-account-key.json');
+// ====== CONFIG ======
+const serviceAccount = require('./service-account-key.json'); // อย่า commit ไฟล์นี้ขึ้น git
 const csvFilePath = './tyreplusratchapruek.csv';
+
 const storeId = 'tyreplus_ratchapruek';
 const storeName = 'Tyreplus สาขา Ratchapruek';
-// --- สิ้นสุดการตั้งค่า ---
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount)
-});
+const BATCH_HARD_LIMIT = 500;
+const BATCH_SAFE_CHUNK = 450;
+// =====================
+
+admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
 const db = admin.firestore();
 
-async function migrateData() {
-  const allRows = [];
-  fs.createReadStream(csvFilePath)
-    .pipe(csv())
-    .on('data', (row) => allRows.push(row))
-    .on('end', async () => {
-      console.log(`🚀 เริ่มการนำเข้าข้อมูลสำหรับสาขา: ${storeName}...`);
-      const batch = db.batch();
+// ------- Helpers -------
+const toId = (s) =>
+  String(s || '')
+    .trim()
+    .toUpperCase()
+    .replace(/[\/\\\s]+/g, '-') // แทน / \ และช่องว่างด้วย '-'
+    .replace(/[^A-Z0-9\-\._]/g, ''); // ตัดตัวอักษรพิเศษอื่นๆ
 
-      const storeDocRef = db.collection('stores').doc(storeId);
-      batch.set(storeDocRef, { branchName: storeName }, { merge: true });
+const variantIdFrom = (size, loadIndex = '') =>
+  toId(loadIndex ? `${size} ${loadIndex}` : size);
 
-      for (const row of allRows) {
-        const brand = row['ยี่ห้อยาง'];
-        const model = row['Model'];
-        const size = row['Size'];
-        const loadIndex = row['Load Index'] || '';
+// parse number (รองรับ , และเว้นวรรค)
+const toNum = (v, def = 0) => {
+  if (v === null || v === undefined) return def;
+  const n = parseFloat(String(v).replace(/,/g, '').trim());
+  return Number.isFinite(n) ? n : def;
+};
 
-        if (!brand || !model || !size) continue;
+const toInt = (v, def = 0) => {
+  if (v === null || v === undefined) return def;
+  const n = parseInt(String(v).replace(/[^\d\-]/g, ''), 10);
+  return Number.isFinite(n) ? n : def;
+};
 
-        const brandId = brand.toUpperCase();
-        const modelId = model.toUpperCase().replace(/[\s\/]/g, '_');
-        const variantId = `${size}_${loadIndex}`.replace(/[\/\s]/g, '-');
+// หา field แบบมีดัชนี โดยรองรับรูปแบบคั่น: ช่องว่าง/_/-
+const findIndexed = (row, bases, idx) => {
+  const keys = Object.keys(row);
+  for (const base of bases) {
+    const re = new RegExp(`^${base}[\\s_-]*${idx}$`, 'i');
+    const k = keys.find((kk) => re.test(kk));
+    if (k) return row[k];
+  }
+  return undefined;
+};
 
-        const brandDocRef = storeDocRef.collection('inventory').doc(brandId);
-        const modelDocRef = brandDocRef.collection('models').doc(modelId);
-        const variantDocRef = modelDocRef.collection('variants').doc(variantId);
+const qtyField = (row, i) => findIndexed(row, ['จำนวน', 'Qty', 'QTY'], i);
+const promoField = (row, i) => findIndexed(row, ['โปรโมชั่น', 'Promo', 'PROMO', 'โปร'], i);
 
-        // --- ✨ บรรทัดที่เพิ่มเข้ามาเพื่อแก้ไขปัญหา ✨ ---
-        // สร้างเอกสารของ Brand (ยี่ห้อ) ให้แน่ใจว่ามีอยู่จริง
-        batch.set(brandDocRef, {}, { merge: true }); 
-        // -----------------------------------------
-
-        batch.set(modelDocRef, { modelName: model }, { merge: true });
-        batch.set(variantDocRef, {
-          size: size,
-          loadIndex: loadIndex,
-          basePrice: parseFloat(row.Price) || 0
-        }, { merge: true });
-
-        for (let i = 1; i <= 4; i++) {
-          const dotCode = row[`DOT ${i}`];
-          const quantity = parseInt(row[`จำนวน${i}`] || row[`จำนวน ${i}`] || '0', 10);
-
-          if (dotCode && !isNaN(quantity) && quantity > 0) {
-            const dotData = { qty: quantity };
-            const promoPrice = parseFloat(row[`โปรโมชั่น${i}`]);
-            if (promoPrice && promoPrice > 0) {
-              dotData.promoPrice = promoPrice;
-            }
-            const dotDocRef = variantDocRef.collection('dots').doc(dotCode);
-            batch.set(dotDocRef, dotData);
-          }
-        }
-      }
-
-      try {
-        await batch.commit();
-        console.log('--- 🎉 การนำเข้าข้อมูลเสร็จสมบูรณ์! ---');
-      } catch (error) {
-        console.error('❌ เกิดข้อผิดพลาดระหว่างการนำเข้า:', error);
-      }
-    });
+// แตก batch เป็นชุด ๆ
+async function commitInChunks(writes) {
+  let committed = 0;
+  for (let i = 0; i < writes.length; i += BATCH_SAFE_CHUNK) {
+    const chunk = writes.slice(i, i + BATCH_SAFE_CHUNK);
+    const batch = db.batch();
+    for (const w of chunk) {
+      if (w.op === 'set') batch.set(w.ref, w.data, w.options || undefined);
+      else if (w.op === 'update') batch.update(w.ref, w.data);
+      else if (w.op === 'delete') batch.delete(w.ref);
+    }
+    await batch.commit();
+    committed += chunk.length;
+    console.log(`✅ committed ${committed}/${writes.length}`);
+  }
 }
 
-migrateData();
+async function migrateData() {
+  const rows = [];
+  await new Promise((resolve, reject) => {
+    fs.createReadStream(csvFilePath)
+      .pipe(csv())
+      .on('data', (r) => rows.push(r))
+      .on('end', resolve)
+      .on('error', reject);
+  });
+
+  console.log(`🚀 Start import for store: ${storeName} (${storeId}), rows=${rows.length}`);
+
+  const writes = [];
+
+  // ensure store doc
+  const storeDocRef = db.collection('stores').doc(storeId);
+  writes.push({
+    op: 'set',
+    ref: storeDocRef,
+    data: { branchName: storeName, isActive: true },
+    options: { merge: true },
+  });
+
+  let productCount = 0;
+  let dotCount = 0;
+
+  for (const row of rows) {
+    const brand = row['ยี่ห้อยาง'] || row['Brand'] || row['BRAND'];
+    const model = row['Model'] || row['MODEL'];
+    const size = row['Size'] || row['SIZE'];
+    const loadIndex = row['Load Index'] || row['LOAD INDEX'] || row['LI'] || '';
+    const basePrice = toNum(row['Price'] ?? row['PRICE'] ?? row['Base Price']);
+
+    if (!brand || !model || !size) continue;
+
+    const brandId = toId(brand);
+    const modelId = toId(model);
+    const variantId = variantIdFrom(size, loadIndex);
+
+    const brandDocRef = storeDocRef.collection('inventory').doc(brandId);
+    const modelDocRef = brandDocRef.collection('models').doc(modelId);
+    const variantDocRef = modelDocRef.collection('variants').doc(variantId);
+
+    // upsert brand/model/variant
+    writes.push({ op: 'set', ref: brandDocRef, data: { brandName: brand }, options: { merge: true } });
+    writes.push({ op: 'set', ref: modelDocRef, data: { modelName: model }, options: { merge: true } });
+    writes.push({
+      op: 'set',
+      ref: variantDocRef,
+      data: {
+        size: String(size).trim(),
+        loadIndex: String(loadIndex || '').trim(),
+        basePrice,
+        variantId, // เก็บไว้เผื่อใช้ค้นภายหลัง
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      options: { merge: true },
+    });
+
+    // --- สแกนคอลัมน์ DOT ทั้งหมดแบบไดนามิก ---
+    const dotKeys = Object.keys(row)
+      .filter((k) => /^dot[\s_-]*\d+$/i.test(k)) // รองรับ DOT 1, DOT_1, DOT-1, dot1
+      .map((k) => ({ key: k, idx: parseInt(String(k).match(/\d+/)[0], 10) }))
+      .sort((a, b) => a.idx - b.idx);
+
+    let hasAnyDot = false;
+
+    for (const { key, idx } of dotKeys) {
+      const dotCodeRaw = row[key];
+      const qtyRaw = qtyField(row, idx);
+      const promoRaw = promoField(row, idx);
+
+      const dotCode = String(dotCodeRaw || '').trim();
+      const qty = toInt(qtyRaw);
+      const promo = promoRaw === undefined ? undefined : toNum(promoRaw, null);
+
+      if (!dotCode || qty <= 0) continue;
+
+      const dotRef = variantDocRef.collection('dots').doc(dotCode);
+      const dotData = {
+        qty,
+        ...(promo ? { promoPrice: promo } : {}),
+      };
+
+      writes.push({ op: 'set', ref: dotRef, data: dotData, options: { merge: true } });
+      hasAnyDot = true;
+      dotCount++;
+    }
+
+    if (hasAnyDot) productCount++;
+  }
+
+  console.log(`🧾 prepared writes (brand/model/variant/dots): ~${writes.length}`);
+  await commitInChunks(writes);
+
+  console.log(`🎉 Done. products=${productCount}, dots=${dotCount}`);
+}
+
+migrateData()
+  .catch((e) => {
+    console.error('❌ Import failed', e);
+    process.exit(1);
+  });

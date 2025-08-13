@@ -3,46 +3,41 @@
 import { useState } from 'react';
 import Sidebar from '@/src/app/components/Sidebar';
 import MyInventory from '@/src/app/components/MyInventory';
-import MarketplaceView from '@/src/app/components/MarketplaceView';
-import Orders from '@/src/app/components/Orders';
-import { CartProvider } from '@/contexts/CartContext';
+import TransferRequestsView from '@/src/app/components/TransferRequestsView'; // <-- เปลี่ยนชื่อ
+import TransferPlatformView from '@/src/app/components/TransferPlatformView'; // <-- หน้าใหม่
 import { BranchProvider, useBranch } from '@/contexts/BranchContext';
-import { Menu, ShoppingCart } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 
+// ✅  ปรับปรุง ViewKey
 type ViewKey =
   | 'inventory'
-  | 'marketplace'
-  | 'orders'
+  | 'transfer_platform'
+  | 'transfer_requests'
   | 'dashboard'
   | 'network'
-  | 'analytics'
-  | 'orderHistory'
-  | 'dealerDirectory';
+  | 'analytics';
 
 function AppContent() {
-  const [currentView, setCurrentView] = useState<ViewKey>('inventory');   // ✅ ใส่ generic
+  const [currentView, setCurrentView] = useState<ViewKey>('transfer_platform'); // <-- ตั้งค่าเริ่มต้นเป็นหน้า Platform
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
-  const [isCartOpen, setIsCartOpen] = useState(false);
-
   const { branches, selectedBranchId, selectedBranch, setSelectedBranchId } = useBranch();
 
   const renderContent = () => {
     switch (currentView) {
       case 'inventory':
         return <MyInventory />;
-      case 'marketplace':
+      case 'transfer_platform': // <-- หน้าสร้างคำขอ
         return (
-          <MarketplaceView
+          <TransferPlatformView
             myBranchId={selectedBranchId ?? ''}
             myBranchName={selectedBranch?.branchName ?? 'My Branch'}
-            setCurrentView={setCurrentView}                    // ✅ type ตรง
           />
         );
-      case 'orders':
-        return <Orders myBranchId={selectedBranchId ?? ''} />;
+      case 'transfer_requests': // <-- หน้ารายการ
+        return <TransferRequestsView myBranchId={selectedBranchId ?? ''} />;
+      case 'dashboard':
+        return <div>Dashboard Content</div>; // Placeholder
       default:
-        return <MyInventory />;
+        return <TransferPlatformView myBranchId={selectedBranchId ?? ''} myBranchName={selectedBranch?.branchName ?? 'My Branch'} />;
     }
   };
 
@@ -51,17 +46,14 @@ function AppContent() {
       <div className="flex">
         <Sidebar
           currentView={currentView}
-          setCurrentView={setCurrentView}                      // ✅ ส่ง setter ตรง ๆ ได้เลย
+          setCurrentView={setCurrentView}
           isMobileMenuOpen={isMobileMenuOpen}
-          setIsMobileMenuOpen={setIsMobileMenuOpen}            // ✅ ส่ง setter ตรง ๆ ได้เลย
+          setIsMobileMenuOpen={setIsMobileMenuOpen}
           branches={branches}
-          orders={[]}
           selectedBranch={selectedBranchId ?? ''}
           setSelectedBranch={setSelectedBranchId}
         />
-        {/* ... ส่วนอื่นเหมือนเดิม ... */}
         <main className="flex-1 lg:ml-64 transition-all duration-300 ease-in-out">
-          {/* header & content */}
           <div className="container mx-auto max-w-7xl px-4 py-4 sm:px-6 lg:px-8">
             {renderContent()}
           </div>
@@ -74,9 +66,7 @@ function AppContent() {
 export default function Home() {
   return (
     <BranchProvider>
-      <CartProvider>
-        <AppContent />
-      </CartProvider>
+      <AppContent />
     </BranchProvider>
   );
 }
