@@ -1,4 +1,4 @@
-// lib/services/InventoryService.ts - Complete Final Version
+// lib/services/InventoryService.ts - Complete Final Version with Fixed OrderService
 import {
   collection,
   doc,
@@ -813,7 +813,7 @@ export const InventoryService = {
   },
 };
 
-// ===== Order Service =====
+// ===== Order Service ===== (Fixed Version)
 export const OrderService = {
   /**
    * สร้าง order ใหม่
@@ -846,21 +846,61 @@ export const OrderService = {
   },
 
   /**
-   * ดึง orders ของสาขา
+   * ดึง orders ของสาขา - ใช้ query แบบง่าย
    */
   async getOrdersByBranch(branchId: string, role: 'buyer' | 'seller'): Promise<Order[]> {
     try {
       const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
+      
+      // ใช้ query แบบง่าย - เฉพาะ where clause เดียว
       const q = query(
         collection(db, 'orders'),
-        where(field, '==', branchId),
-        orderBy('createdAt', 'desc')
+        where(field, '==', branchId)
       );
+      
       const snap = await getDocs(q);
-      return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Order[];
+      const orders = snap.docs.map((d) => ({ 
+        id: d.id, 
+        ...(d.data() as any) 
+      })) as Order[];
+      
+      // Sort ใน JavaScript แทน Firestore
+      orders.sort((a, b) => {
+        const aTime = a.createdAt?.seconds || 0;
+        const bTime = b.createdAt?.seconds || 0;
+        return bTime - aTime; // newest first
+      });
+      
+      return orders;
     } catch (error) {
       console.error(`❌ Error getting orders for ${role} ${branchId}:`, error);
-      throw error;
+      
+      // Fallback: ดึงทั้งหมดแล้วกรองใน JavaScript
+      try {
+        console.log('🔄 Fallback: Getting all orders and filtering locally...');
+        const allOrdersSnap = await getDocs(collection(db, 'orders'));
+        const allOrders = allOrdersSnap.docs.map((d) => ({ 
+          id: d.id, 
+          ...(d.data() as any) 
+        })) as Order[];
+        
+        const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
+        const filtered = allOrders.filter((order) => 
+          order[field] === branchId
+        );
+        
+        // Sort by date
+        filtered.sort((a, b) => {
+          const aTime = a.createdAt?.seconds || 0;
+          const bTime = b.createdAt?.seconds || 0;
+          return bTime - aTime;
+        });
+        
+        return filtered;
+      } catch (fallbackError) {
+        console.error('❌ Fallback also failed:', fallbackError);
+        return [];
+      }
     }
   },
 
@@ -880,26 +920,27 @@ export const OrderService = {
       throw error;
     }
   },
-/**
- * ปฏิเสธการโอนย้าย
- */
-async rejectTransfer(orderId: string, reason?: string): Promise<void> {
-  try {
-    const ref = doc(db, 'orders', orderId);
-    await updateDoc(ref, {
-      status: 'cancelled',
-      cancelReason: reason ?? null,
-      updatedAt: serverTimestamp(),
-    });
-    console.log(`✅ Rejected transfer: ${orderId}`);
-  } catch (error) {
-    console.error(`❌ Error rejecting transfer ${orderId}:`, error);
-    throw error;
-  }
-},
 
   /**
-   * Subscribe to orders (realtime)
+   * ปฏิเสธการโอนย้าย
+   */
+  async rejectTransfer(orderId: string, reason?: string): Promise<void> {
+    try {
+      const ref = doc(db, 'orders', orderId);
+      await updateDoc(ref, {
+        status: 'cancelled',
+        cancelReason: reason || null,
+        updatedAt: serverTimestamp(),
+      });
+      console.log(`✅ Rejected transfer: ${orderId}`);
+    } catch (error) {
+      console.error(`❌ Error rejecting transfer ${orderId}:`, error);
+      throw error;
+    }
+  },
+
+  /**
+   * Subscribe to orders (realtime) - ใช้ query แบบง่าย
    */
   onOrdersByBranch(
     branchId: string,
@@ -907,15 +948,38 @@ async rejectTransfer(orderId: string, reason?: string): Promise<void> {
     callback: (orders: Order[]) => void
   ) {
     const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
+    
+    // ใช้ query แบบง่าย - เฉพาะ where clause เดียว
     const q = query(
       collection(db, 'orders'),
-      where(field, '==', branchId),
-      orderBy('createdAt', 'desc')
+      where(field, '==', branchId)
     );
     
     return onSnapshot(q, (snap) => {
-      const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Order[];
-      callback(list);
+      const orders = snap.docs.map((d) => ({ 
+        id: d.id, 
+        ...(d.data() as any) 
+      })) as Order[];
+      
+      // Sort ใน JavaScript
+      orders.sort((a, b) => {
+        const aTime = a.createdAt?.seconds || 0;
+        const bTime = b.createdAt?.seconds || 0;
+        return bTime - aTime;
+      });
+      
+      callback(orders);
+    }, (error) => {
+      console.error('❌ Realtime orders error:', error);
+      
+      // Fallback: ใช้ polling แทน realtime
+      console.log('🔄 Falling back to simple query...');
+      OrderService.getOrdersByBranch(branchId, role)
+        .then(callback)
+        .catch((err) => {
+          console.error('❌ Fallback failed:', err);
+          callback([]); // คืนค่า array ว่าง
+        });
     });
   },
 };

@@ -1,9 +1,10 @@
+// src/app/page.tsx - Fixed routing version
 'use client';
 
 import * as React from 'react';
-import { useSearchParams } from 'next/navigation';
+import { useSearchParams, useRouter } from 'next/navigation';
 import { useBranch } from '@/contexts/BranchContext';
-import { FirebaseTest } from '@/src/app/components/FirebaseTest'; // เพิ่มนี้
+import { FirebaseTest } from '@/src/app/components/FirebaseTest';
 
 // views
 import MyInventory from '@/src/app/components/MyInventory';
@@ -21,7 +22,7 @@ type ViewKey =
   | 'transfer_requests'
   | 'dashboard'
   | 'network'
-  | 'debug'; // เพิ่ม debug view
+  | 'debug';
 
 function isViewKey(v: string | null): v is ViewKey {
   return !!v && ['inventory','transfer_platform','transfer_requests','dashboard','network','debug'].includes(v);
@@ -29,11 +30,18 @@ function isViewKey(v: string | null): v is ViewKey {
 
 export default function Page() {
   const search = useSearchParams();
+  const router = useRouter();
   const { selectedBranch, selectedBranchId, branches, loading, error } = useBranch();
 
   const view: ViewKey = isViewKey(search?.get('view')) ? (search!.get('view') as ViewKey) : 'inventory';
   const myBranchId = selectedBranchId || '';
   const myBranchName = selectedBranch?.branchName || selectedBranchId || 'My Branch';
+
+  // Navigation handler for views that need it
+  const handleNavigate = React.useCallback((targetView: ViewKey) => {
+    console.log('🔄 Navigating to:', targetView);
+    router.push(`/?view=${targetView}`);
+  }, [router]);
 
   // Debug view
   if (view === 'debug') {
@@ -108,7 +116,7 @@ export default function Page() {
             </ul>
           </div>
           <Button onClick={() => window.location.reload()}>🔄 Reload Page</Button>
-          <Button variant="outline" onClick={() => window.open('?view=debug', '_blank')}>🐛 Open Debug View</Button>
+          <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Open Debug View</Button>
         </CardContent>
       </Card>
     );
@@ -124,7 +132,7 @@ export default function Page() {
         <CardContent>
           <p>Connecting to database and loading branch information...</p>
           <div className="mt-4">
-            <Button variant="outline" onClick={() => window.open('?view=debug', '_blank')}>🐛 Debug Info</Button>
+            <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Debug Info</Button>
           </div>
         </CardContent>
       </Card>
@@ -154,7 +162,7 @@ export default function Page() {
           )}
           
           <div className="flex gap-2">
-            <Button variant="outline" onClick={() => window.open('?view=debug', '_blank')}>🐛 Debug Info</Button>
+            <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Debug Info</Button>
             <Button onClick={() => window.location.reload()}>🔄 Reload</Button>
           </div>
         </CardContent>
@@ -165,7 +173,7 @@ export default function Page() {
   // แสดง view ตามปกติ
   switch (view) {
     case 'inventory':
-      return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} />;
+      return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} onNavigate={handleNavigate} />;
     case 'transfer_platform':
       return <TransferPlatformView myBranchId={myBranchId} myBranchName={myBranchName} />;
     case 'transfer_requests':
@@ -185,10 +193,35 @@ export default function Page() {
           <CardHeader>
             <CardTitle>Branches (placeholder)</CardTitle>
           </CardHeader>
-          <CardContent>หน้านี้สำหรับจัดการ/ดูรายการสาขา</CardContent>
+          <CardContent className="space-y-4">
+            <p>หน้านี้สำหรับจัดการ/ดูรายการสาขา</p>
+            
+            <div className="space-y-2">
+              <p><strong>Available Branches:</strong></p>
+              <div className="grid gap-2">
+                {branches.map((branch) => (
+                  <div key={branch.id} className="border rounded p-3">
+                    <div className="font-semibold">{branch.branchName}</div>
+                    <div className="text-sm text-muted-foreground">ID: {branch.id}</div>
+                    <div className="text-sm">
+                      {branch.isActive ? (
+                        <Badge variant="default">Active</Badge>
+                      ) : (
+                        <Badge variant="secondary">Inactive</Badge>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            
+            <Button onClick={() => router.push('/branches/new')}>
+              + Add New Branch
+            </Button>
+          </CardContent>
         </Card>
       );
     default:
-      return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} />;
+      return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} onNavigate={handleNavigate} />;
   }
 }
