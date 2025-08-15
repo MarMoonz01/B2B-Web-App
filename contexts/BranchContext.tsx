@@ -1,13 +1,11 @@
-// contexts/BranchContext.tsx
+// src/contexts/BranchContext.tsx
 'use client';
 
-import {
+import React, {
   createContext,
-  useCallback,
   useContext,
   useEffect,
   useMemo,
-  useRef,
   useState,
 } from 'react';
 import { db } from '@/lib/firebase';
@@ -32,18 +30,18 @@ type BranchContextType = {
 
 const BranchContext = createContext<BranchContextType | null>(null);
 
-const LS_KEY = 'selectedBranchId';
+// ใช้ key เดียวกับ BranchSelect เพื่อให้ sync กัน
+const LS_KEY = 'branchId';
 
 export function BranchProvider({ children }: { children: React.ReactNode }) {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedBranchId, setSelectedBranchIdState] = useState<string | null>(null);
+  const [selectedBranchId, setSelectedBranchIdState] = useState<string | null>(
+    null
+  );
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // กันการเซ็ต default ซ้ำๆ เวลา snapshot อัปเดต
-  const didSetInitial = useRef(false);
-
-  // โหลด branches แบบ realtime
+  // โหลดสาขาแบบ realtime จาก Firestore (collection: stores)
   useEffect(() => {
     const unsub = onSnapshot(collection(db, 'stores'), (snap) => {
       const list: Branch[] = snap.docs.map((d) => {
@@ -60,43 +58,29 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
       setBranches(list);
       setLoading(false);
 
-      // เซ็ต default branch แค่ครั้งแรกหลังได้ข้อมูล
-      if (!didSetInitial.current) {
-        didSetInitial.current = true;
-
-        let saved: string | null = null;
-        if (typeof window !== 'undefined') {
-          try {
-            saved = localStorage.getItem(LS_KEY);
-          } catch {}
-        }
-
-        const pick =
-          (saved && list.some((b) => b.id === saved) && saved) ||
-          list.find((b) => b.isActive)?.id ||
-          list[0]?.id ||
-          null;
-
-        if (pick) {
-          setSelectedBranchIdState(pick);
-          try {
-            localStorage.setItem(LS_KEY, pick);
-          } catch {}
-        }
+      // ตั้งค่าเริ่มต้นให้ selectedBranchId หากยังไม่มี
+      if (!selectedBranchId) {
+        const saved =
+          (typeof window !== 'undefined' && localStorage.getItem(LS_KEY)) || '';
+        const validSaved =
+          saved && list.find((b) => b.id === saved) ? saved : null;
+        const pick = validSaved ?? (list[0]?.id ?? null);
+        if (pick) setSelectedBranchIdState(pick);
       }
     });
 
     return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // sync setter กับ localStorage + trigger refreshKey
-  const setSelectedBranchId = useCallback((id: string) => {
+  // sync กับ localStorage และ trigger refresh UI
+  const setSelectedBranchId = (id: string) => {
     setSelectedBranchIdState(id);
-    try {
-      if (typeof window !== 'undefined') localStorage.setItem(LS_KEY, id);
-    } catch {}
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LS_KEY, id);
+    }
     setRefreshKey((k) => k + 1);
-  }, []);
+  };
 
   const selectedBranch = useMemo(
     () => branches.find((b) => b.id === selectedBranchId) ?? null,
@@ -112,11 +96,15 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
     refreshKey,
   };
 
-  return <BranchContext.Provider value={value}>{children}</BranchContext.Provider>;
+  return (
+    <BranchContext.Provider value={value}>{children}</BranchContext.Provider>
+  );
 }
 
-export const useBranch = () => {
+export function useBranch() {
   const ctx = useContext(BranchContext);
-  if (!ctx) throw new Error('useBranch must be used within BranchProvider');
+  if (!ctx) {
+    throw new Error('useBranch must be used within BranchProvider');
+  }
   return ctx;
-};
+}

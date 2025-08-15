@@ -23,9 +23,6 @@ import { toast } from 'sonner';
 import { InventoryService, StoreService } from '@/lib/services/InventoryService';
 import type { GroupedProduct } from '@/types/inventory';
 
-// <<< เพิ่ม: ใช้ BranchContext เป็น fallback หากไม่ได้ส่ง prop มา >>>
-import { useBranch } from '@/contexts/BranchContext';
-
 // shadcn/ui
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
@@ -109,16 +106,11 @@ export default function MyInventory({
   myBranchName,
   onNavigate,
 }: {
-  myBranchId?: string;            // <<< อนุญาตไม่ส่งได้
-  myBranchName?: string;          // <<< อนุญาตไม่ส่งได้
+  myBranchId: string;
+  myBranchName: string;
   onNavigate?: (k: ViewKey) => void;
 }) {
   const qc = useQueryClient();
-
-  // ---------- Fallback จาก BranchContext ----------
-  const { selectedBranchId, selectedBranch } = useBranch();
-  const effBranchId = myBranchId || selectedBranchId || '';                       // ใช้ตัวนี้แทนทุกที่
-  const effBranchName = myBranchName || selectedBranch?.branchName || 'My Branch';
 
   // ---------- UI State ----------
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
@@ -135,21 +127,21 @@ export default function MyInventory({
 
   // ---------- Data ----------
   const invQuery = useQuery({
-    queryKey: ['inventory', 'store', effBranchId],          // <<< ใช้ effBranchId
+    queryKey: ['inventory', 'store', myBranchId],
     queryFn: async () => {
       const stores = await StoreService.getAllStores();
-      const name = stores[effBranchId] ?? effBranchName ?? effBranchId;
-      const inv = await InventoryService.fetchStoreInventory(effBranchId, name);
+      const name = stores[myBranchId] ?? myBranchName ?? myBranchId;
+      const inv = await InventoryService.fetchStoreInventory(myBranchId, name);
       return { inv, branchName: name };
     },
-    enabled: !!effBranchId,                                 // <<< เปิด fetch เมื่อมี branchId
+    enabled: !!myBranchId,
     staleTime: 60_000,
     refetchInterval: 60_000,
   });
 
-  const loading = invQuery.isLoading || invQuery.isRefetching;
+  const isLoading = invQuery.isLoading || invQuery.isRefetching;
   const inventory = (invQuery.data?.inv ?? []) as GroupedProduct[];
-  const branchName = invQuery.data?.branchName ?? effBranchName;
+  const branchName = invQuery.data?.branchName ?? myBranchName;
 
   // ---------- Options Data ----------
   const availableBrands = useMemo(
@@ -174,7 +166,7 @@ export default function MyInventory({
   const rows: Row[] = useMemo(() => {
     const out: Row[] = [];
     for (const p of inventory) {
-      const b = (p.branches ?? [])[0]; // ของสาขานี้
+      const b = (p.branches ?? [])[0]; // inventory ของสาขานี้
       if (!b) continue;
 
       const sizes = b.sizes ?? [];
@@ -299,7 +291,7 @@ export default function MyInventory({
       qtyChange: number;
     }) => {
       await InventoryService.createStockMovement(
-        effBranchId, // <<< ใช้ effBranchId
+        myBranchId,
         {
           brand: payload.brand,
           model: payload.model,
@@ -313,7 +305,7 @@ export default function MyInventory({
     },
     onSuccess: () => {
       toast.success('Stock updated');
-      qc.invalidateQueries({ queryKey: ['inventory', 'store', effBranchId] }); // <<< invalidate ตาม effBranchId
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
     },
     onError: (e: any) => {
       toast.error(`Update failed: ${e?.message ?? 'Unknown error'}`);
@@ -363,11 +355,11 @@ export default function MyInventory({
   });
   const [promoForm, setPromoForm] = useState<{ promoPrice: string }>({ promoPrice: '' });
 
-  // --- upsert / promo / delete (สมมุติว่า InventoryService มี 3 ฟังก์ชันนี้แล้ว) ---
+  // สร้าง DOT / อัปเดต qty+promo พร้อมกัน
   const upsertDotMutation = useMutation({
     mutationFn: async () => {
       const r = openAddDot.row!;
-      await InventoryService.upsertDot(effBranchId, {
+      await InventoryService.upsertDot(myBranchId, {
         brand: r.brand,
         model: r.model,
         variantId: addForm.variantId,
@@ -379,7 +371,7 @@ export default function MyInventory({
     onSuccess: () => {
       toast.success('DOT saved');
       setOpenAddDot({ open: false, row: null });
-      qc.invalidateQueries({ queryKey: ['inventory', 'store', effBranchId] });
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
     },
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
@@ -389,7 +381,7 @@ export default function MyInventory({
       const r = openPromo.row!;
       const d = openPromo.dot!;
       const val = promoForm.promoPrice.trim();
-      await InventoryService.setPromoPrice(effBranchId, {
+      await InventoryService.setPromoPrice(myBranchId, {
         brand: r.brand,
         model: r.model,
         variantId: d.variantId,
@@ -400,7 +392,7 @@ export default function MyInventory({
     onSuccess: () => {
       toast.success('Promo updated');
       setOpenPromo({ open: false, row: null, dot: null });
-      qc.invalidateQueries({ queryKey: ['inventory', 'store', effBranchId] });
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
     },
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
@@ -409,7 +401,7 @@ export default function MyInventory({
     mutationFn: async () => {
       const r = openDelete.row!;
       const d = openDelete.dot!;
-      await InventoryService.deleteDot(effBranchId, {
+      await InventoryService.deleteDot(myBranchId, {
         brand: r.brand,
         model: r.model,
         variantId: d.variantId,
@@ -419,7 +411,7 @@ export default function MyInventory({
     onSuccess: () => {
       toast.success('DOT deleted');
       setOpenDelete({ open: false, row: null, dot: null });
-      qc.invalidateQueries({ queryKey: ['inventory', 'store', effBranchId] });
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
     },
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
@@ -629,7 +621,7 @@ export default function MyInventory({
     </div>
   );
 
-  const TableBody = loading ? (
+  const TableBody = isLoading ? (
     <div className="p-4 space-y-2">
       {Array.from({ length: 8 }).map((_, i) => (
         <Skeleton key={i} className="h-16 w-full" />
@@ -836,7 +828,7 @@ export default function MyInventory({
   // ---------- Grid view ----------
   const GridView = (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-      {loading
+      {isLoading
         ? Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-48 w-full" />
           ))
@@ -895,6 +887,7 @@ export default function MyInventory({
                   </Button>
                 </div>
 
+                {/* inline expanded in card */}
                 {expandedKey === r.key && (
                   <div className="bg-slate-50 rounded-lg px-3 py-2">
                     <div className="text-xs text-muted-foreground mb-1 flex items-center gap-2">
@@ -950,10 +943,10 @@ export default function MyInventory({
     </div>
   );
 
-  // ---------- Matrix view ----------
+  // ---------- Matrix view (Spec × DOT) ----------
   const MatrixView = (
     <div className="space-y-4">
-      {loading ? (
+      {isLoading ? (
         Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-48 w-full" />)
       ) : rows.length === 0 ? (
         <div className="p-10 text-center text-muted-foreground">
@@ -982,6 +975,7 @@ export default function MyInventory({
               <CardContent className="pt-2">
                 <ScrollArea className="w-full">
                   <div className="min-w-[720px]">
+                    {/* header row (dots) */}
                     <div className="grid" style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}>
                       <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border">
                         Size / DOT
@@ -996,6 +990,7 @@ export default function MyInventory({
                       </div>
                     </div>
 
+                    {/* body rows (each spec) */}
                     {specs.map((spec) => {
                       let rowTotal = 0;
                       return (
@@ -1084,6 +1079,7 @@ export default function MyInventory({
                       );
                     })}
 
+                    {/* footer total per column */}
                     <div
                       className="grid"
                       style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}
@@ -1147,6 +1143,7 @@ export default function MyInventory({
             <DialogTitle>Add DOT</DialogTitle>
           </DialogHeader>
           <div className="space-y-3">
+            {/* เลือกสเปค (variant) */}
             <div>
               <Label className="text-xs">Specification</Label>
               <Select

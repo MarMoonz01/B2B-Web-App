@@ -1,121 +1,87 @@
 // src/app/page.tsx
-import {
-  Card,
-  CardHeader,
-  CardTitle,
-  CardDescription,
-  CardContent,
-} from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { Boxes, Share2, Inbox, Building2, PlusSquare, LineChart } from "lucide-react";
+'use client';
+
+import * as React from 'react';
+import { useSearchParams } from 'next/navigation';
+import { useBranch } from '@/contexts/BranchContext';
+
+// views
+import MyInventory from '@/src/app/components/MyInventory';
+import TransferPlatformView from '@/src/app/components/TransferPlatformView';
+import TransferRequestsView from '@/src/app/components/TransferRequestsView';
+
+// UI helpers (optional)
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+
+type ViewKey =
+  | 'inventory'
+  | 'transfer_platform'
+  | 'transfer_requests'
+  | 'dashboard'
+  | 'network'
+  | 'analytics';
+
+function isViewKey(v: string | null): v is ViewKey {
+  return !!v && ['inventory','transfer_platform','transfer_requests','dashboard','network','analytics'].includes(v);
+}
 
 export default function Page() {
-  return (
-    <div className="space-y-8">
-      {/* Header */}
-      <section className="space-y-2">
-        <h1 className="text-2xl font-semibold tracking-tight">Welcome 👋</h1>
-        <p className="text-sm text-muted-foreground">
-          Use the left sidebar to navigate between features.
-        </p>
-      </section>
+  const search = useSearchParams();
+  const { selectedBranch, selectedBranchId } = useBranch();
 
-      {/* Static overview (ไม่มีลิงก์ / ปุ่ม) */}
-      <section className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-        <Card className="hover:shadow-sm transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Boxes className="h-4 w-4" />
-              Inventory
-            </CardTitle>
-            <CardDescription>Manage stock by brand / model / DOT.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Open from the sidebar.
-          </CardContent>
-        </Card>
+  const view: ViewKey = isViewKey(search?.get('view')) ? (search!.get('view') as ViewKey) : 'inventory';
+  const myBranchId = selectedBranchId || '';
+  const myBranchName = selectedBranch?.branchName || selectedBranchId || 'My Branch';
 
-        <Card className="hover:shadow-sm transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Share2 className="h-4 w-4" />
-              Transfer Platform
-            </CardTitle>
-            <CardDescription>Request tyres from other branches via cart.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Open from the sidebar.
-          </CardContent>
-        </Card>
+  // ป้องกัน edge case ที่ยังไม่มีสาขา
+  if (!myBranchId) {
+    return (
+      <Card>
+        <CardHeader>
+          <CardTitle>Select a branch to get started</CardTitle>
+        </CardHeader>
+        <CardContent>
+          เลือกสาขาจากเมนูด้านซ้ายบน (BranchSelect) แล้วหน้านี้จะโหลดข้อมูลให้โดยอัตโนมัติ
+        </CardContent>
+      </Card>
+    );
+  }
 
-        <Card className="hover:shadow-sm transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Inbox className="h-4 w-4" />
-              Transfer Requests
-            </CardTitle>
-            <CardDescription>Track incoming & outgoing requests.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Open from the sidebar.
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-sm transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Building2 className="h-4 w-4" />
-              Branches
-            </CardTitle>
-            <CardDescription>Browse and manage branch information.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Open from the sidebar.
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-sm transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <PlusSquare className="h-4 w-4" />
-              Add Branch
-            </CardTitle>
-            <CardDescription>Create a new branch and store it in Firestore.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Open from the sidebar.
-          </CardContent>
-        </Card>
-
-        <Card className="hover:shadow-sm transition-shadow">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base flex items-center gap-2">
-              <LineChart className="h-4 w-4" />
-              Analytics (soon)
-            </CardTitle>
-            <CardDescription>Sales, stock velocity, promotions performance.</CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            Coming next
-          </CardContent>
-        </Card>
-      </section>
-
-      {/* Tips */}
-      <section className="grid grid-cols-1 gap-4">
+  switch (view) {
+    case 'inventory':
+      return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} />;
+    case 'transfer_platform':
+      return <TransferPlatformView myBranchId={myBranchId} myBranchName={myBranchName} />;
+    case 'transfer_requests':
+      return <TransferRequestsView myBranchId={myBranchId} />;
+    case 'dashboard':
+      return (
         <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Notes</CardTitle>
-            <CardDescription>All navigation is via the left sidebar.</CardDescription>
+          <CardHeader>
+            <CardTitle>Dashboard (placeholder)</CardTitle>
           </CardHeader>
-          <CardContent className="text-sm text-muted-foreground">
-            <Badge variant="secondary">Heads up</Badge>{" "}
-            If you still see <strong>404</strong> on any menu, make sure that route
-            exists (e.g. <code>/inventory</code>, <code>/transfer</code>,
-            <code>/transfer-requests</code>, <code>/branches</code>, <code>/branches/new</code>).
-          </CardContent>
+          <CardContent>ใส่กราฟหรือ KPI รวมที่ต้องการในภายหลังได้ที่นี่</CardContent>
         </Card>
-      </section>
-    </div>
-  );
+      );
+    case 'network':
+      return (
+        <Card>
+          <CardHeader>
+            <CardTitle>Branches (placeholder)</CardTitle>
+          </CardHeader>
+          <CardContent>หน้านี้สำหรับจัดการ/ดูรายการสาขา</CardContent>
+        </Card>
+      );
+    case 'analytics':
+      return (
+        <Card>
+          <CardHeader>
+            <CardTitle>Analytics (placeholder)</CardTitle>
+          </CardHeader>
+          <CardContent>รายงานเชิงลึกจะมาอยู่ที่นี่</CardContent>
+        </Card>
+      );
+    default:
+      return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} />;
+  }
 }
