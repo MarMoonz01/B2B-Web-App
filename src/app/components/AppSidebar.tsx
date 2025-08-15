@@ -1,8 +1,8 @@
-// src/components/AppSidebar.tsx
+// src/components/AppSidebar.tsx - Fixed Navigation
 'use client';
 
 import * as React from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { useRouter, useSearchParams, usePathname } from 'next/navigation';
 import {
   Boxes,
   ArrowLeftRight,
@@ -10,10 +10,15 @@ import {
   LineChart,
   Factory,
   LayoutGrid,
+  Plus,
+  Building2,
 } from 'lucide-react';
 
 import BranchSelect from '@/src/app/components/BranchSelect';
 import { useBranch } from '@/contexts/BranchContext';
+
+// ใช้ type เดียวกับ /types/nav.ts
+import type { ViewKey } from '@/types/nav';
 
 import {
   Sidebar,
@@ -31,51 +36,74 @@ import {
   SidebarTrigger,
 } from '@/components/ui/sidebar';
 
-export type ViewKey =
-  | 'inventory'
-  | 'transfer_platform'
-  | 'transfer_requests'
-  | 'dashboard'
-  | 'network';
-
 type AppSidebarProps = {
   currentView?: ViewKey;
   onNavigate?: (k: ViewKey) => void;
 };
 
 const NAV: Array<{
-  key: ViewKey;
+  key: ViewKey | 'new_branch'; // เพิ่ม new_branch ที่ไม่อยู่ใน types/nav.ts
   label: string;
   icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  route?: string;
 }> = [
   { key: 'inventory',         label: 'My Inventory',      icon: Boxes },
   { key: 'transfer_platform', label: 'Transfer Platform', icon: ArrowLeftRight },
   { key: 'transfer_requests', label: 'Transfer Requests', icon: ClipboardList },
-  { key: 'dashboard',         label: 'Analytics',         icon: LineChart },
+  { key: 'analytics',         label: 'Analytics',         icon: LineChart },
   { key: 'network',           label: 'Branches',          icon: Factory },
+  { key: 'new_branch',        label: 'Add Branch',        icon: Plus, route: '/branches/new' },
 ];
 
-function isViewKey(v: string | null): v is ViewKey {
-  return !!v && ['inventory','transfer_platform','transfer_requests','dashboard','network'].includes(v);
+function isViewKey(v: string | null): v is ViewKey | 'new_branch' {
+  return !!v && ['inventory','transfer_platform','transfer_requests','analytics','network','debug','new_branch'].includes(v);
 }
 
 export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps) {
   const router = useRouter();
   const search = useSearchParams();
+  const pathname = usePathname();
   const { selectedBranchId } = useBranch();
 
-  const activeFromQuery = isViewKey(search?.get('view')) ? (search!.get('view') as ViewKey) : 'inventory';
-  const active = currentView ?? activeFromQuery;
+  // ตรวจสอบ active state จาก path และ query
+  const getActiveKey = (): ViewKey | 'new_branch' => {
+    // ถ้าอยู่หน้า branches/new
+    if (pathname === '/branches/new') {
+      return 'new_branch';
+    }
+    
+    // ถ้ามี view ใน query parameter
+    const viewFromQuery = search?.get('view');
+    if (isViewKey(viewFromQuery)) {
+      return viewFromQuery as ViewKey | 'new_branch';
+    }
+    
+    // default
+    return 'inventory';
+  };
+
+  const active = currentView ?? getActiveKey();
 
   const go = React.useCallback(
-    (k: ViewKey) => {
-      if (onNavigate) {
-        onNavigate(k);
+    (k: ViewKey | 'new_branch', route?: string) => {
+      console.log('🚀 Navigation clicked:', k, route);
+      
+      // หากมี route กำหนดไว้ (เช่น /branches/new)
+      if (route) {
+        router.push(route);
         return;
       }
-      const url = new URL(window.location.href);
-      url.searchParams.set('view', k);
-      router.push(`${url.pathname}?${url.searchParams.toString()}`);
+
+      // หากมี onNavigate callback และเป็น ViewKey ที่ valid
+      if (onNavigate && k !== 'new_branch') {
+        onNavigate(k as ViewKey);
+        return;
+      }
+
+      // สำหรับ main navigation - ไปหน้าหลักพร้อม view parameter
+      if (k !== 'new_branch') {
+        router.push(`/?view=${k}`);
+      }
     },
     [onNavigate, router]
   );
@@ -84,43 +112,45 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
     <Sidebar collapsible="icon" variant="sidebar">
       <SidebarRail />
 
-      <SidebarHeader>
-        <div className="flex items-center justify-between px-2">
-          <div className="flex items-center gap-2">
-            <LayoutGrid className="h-5 w-5" />
-            <div className="font-semibold">Tire Network</div>
+      <SidebarHeader className="border-b">
+        <div className="flex items-center justify-between px-3 py-2">
+          <div className="flex items-center gap-2 min-w-0">
+            <LayoutGrid className="h-5 w-5 shrink-0" />
+            <div className="font-semibold truncate">Tire Network</div>
           </div>
-          <SidebarTrigger />
+          <SidebarTrigger className="ml-auto" />
         </div>
 
-        <div className="px-2">
+        <div className="px-3 pb-2">
           <BranchSelect />
-          {selectedBranchId ? (
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              Active branch: <span className="font-medium">{selectedBranchId}</span>
+          {selectedBranchId && (
+            <div className="mt-1 text-[10px] text-muted-foreground truncate">
+              Active: <span className="font-medium">{selectedBranchId}</span>
             </div>
-          ) : null}
+          )}
         </div>
       </SidebarHeader>
 
-      <SidebarContent>
+      <SidebarContent className="px-2">
         <SidebarGroup>
-          <SidebarGroupLabel>Navigation</SidebarGroupLabel>
+          <SidebarGroupLabel className="px-2 py-2 text-xs">Navigation</SidebarGroupLabel>
           <SidebarGroupContent>
-            <SidebarMenu>
+            <SidebarMenu className="space-y-1">
               {NAV.map((item) => {
                 const Icon = item.icon;
                 const isActive = active === item.key;
+                
                 return (
                   <SidebarMenuItem key={item.key}>
                     <SidebarMenuButton
                       isActive={isActive}
-                      onClick={() => go(item.key)}
+                      onClick={() => go(item.key, item.route)}
                       tooltip={item.label}
                       aria-current={isActive ? 'page' : undefined}
+                      className="px-3 py-2"
                     >
-                      <Icon className="h-4 w-4" />
-                      <span className="truncate">{item.label}</span>
+                      <Icon className="h-4 w-4 shrink-0" />
+                      <span className="truncate text-sm">{item.label}</span>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 );
@@ -128,35 +158,21 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
-
-        <SidebarSeparator />
-
-        <SidebarGroup>
-          <SidebarGroupLabel>Shortcuts</SidebarGroupLabel>
-          <SidebarGroupContent>
-            <SidebarMenu>
-              <SidebarMenuItem>
-                <SidebarMenuButton onClick={() => go('inventory')} tooltip="Go to Inventory">
-                  <Boxes className="h-4 w-4" />
-                  <span>Inventory</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-              <SidebarMenuItem>
-                <SidebarMenuButton onClick={() => go('transfer_platform')} tooltip="Go to Transfer Platform">
-                  <ArrowLeftRight className="h-4 w-4" />
-                  <span>Transfer Platform</span>
-                </SidebarMenuButton>
-              </SidebarMenuItem>
-            </SidebarMenu>
-          </SidebarGroupContent>
-        </SidebarGroup>
       </SidebarContent>
 
-      <SidebarFooter>
-        <div className="rounded-md border px-2 py-1.5 text-xs text-muted-foreground">
-          <div className="font-medium text-foreground">Tips</div>
-          <div>• เลือกสาขาด้านบนเพื่อสลับข้อมูล</div>
-          <div>• ใช้ฟิลเตอร์ในแต่ละหน้าเพื่อลดรายการ</div>
+      <SidebarFooter className="border-t">
+        <div className="rounded-md bg-muted/50 px-3 py-2 text-xs text-muted-foreground">
+          <div className="font-medium text-foreground mb-1">Tips</div>
+          <div className="space-y-1 text-[10px]">
+            <div>• Switch branches above</div>
+            <div>• Use filters to narrow results</div>
+          </div>
+          
+          {/* Debug info - ลบออกหลังจากแก้เสร็จ */}
+          <div className="mt-2 pt-2 border-t text-[9px] opacity-60">
+            <div>Path: {pathname}</div>
+            <div>Active: {active}</div>
+          </div>
         </div>
       </SidebarFooter>
     </Sidebar>

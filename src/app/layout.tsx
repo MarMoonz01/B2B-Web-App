@@ -1,4 +1,4 @@
-// src/app/layout.tsx
+// src/app/layout.tsx - Simple Fix Version
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import QueryProvider from "@/src/app/components/QueryProvider";
@@ -21,12 +21,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <SidebarProvider>
                 <div className="flex min-h-screen">
                   <AppSidebar />
-                  {/* เพิ่ม min-w-0 ป้องกัน layout บีบ และปล่อยให้กินเต็มความกว้าง */}
-                  <main className="flex-1 overflow-x-hidden">
-  <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
-    {children}
-  </div>
-</main>
+                  {/* ใช้โครงสร้างเดิม แต่เพิ่ม max-width กับเนื้อหา */}
+                  <main className="flex-1 overflow-x-hidden min-w-0">
+                    <div className="w-full max-w-none px-4 py-6 sm:px-6 lg:px-8">
+                      {children}
+                    </div>
+                  </main>
                 </div>
               </SidebarProvider>
             </BranchProvider>
