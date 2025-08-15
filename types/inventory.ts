@@ -1,4 +1,5 @@
-// รายละเอียดของแต่ละ DOT
+// types/inventory.ts
+
 export interface DotDetail {
   dotCode: string;
   qty: number;
@@ -6,66 +7,66 @@ export interface DotDetail {
   promoPrice?: number;
 }
 
-// รายละเอียดของแต่ละ Size ที่มีในสาขา
 export interface SizeDetail {
-  specification: string; // เช่น "215/55R17 94V"
+  variantId: string;
+  specification: string;
   dots: DotDetail[];
 }
 
-// รายละเอียดของแต่ละสาขาที่มีสต็อก
 export interface BranchDetail {
+  branchId: string;
   branchName: string;
   sizes: SizeDetail[];
 }
 
-// ข้อมูลหลักที่เราจะใช้แสดงผลในตาราง
+// ✅ พิมพ์เขียวหลักที่ทุกไฟล์จะใช้
 export interface GroupedProduct {
-  id: string; // คือชื่อรุ่น เช่น "MICHELIN PRIMACY 4"
-  name: string;
+  id: string; // e.g., "MICHELIN PRIMACY-4"
+  name: string; // e.g., "Michelin Primacy 4"
+  brand: string; // e.g., "Michelin"
+  model: string; // e.g., "Primacy 4"
   totalAvailable: number;
-  branches: BranchDetail[]; // รายละเอียดของทุกสาขาที่มีสินค้านี้
-}
-
-// Props สำหรับ InventoryList (เดิมคือ InventoryTable)
-export interface InventoryListProps {
-  inventory: GroupedProduct[];
-}
-
-// Props สำหรับตารางแสดงรายละเอียด
-export interface InventoryDetailTableProps {
   branches: BranchDetail[];
 }
 
-// Props สำหรับส่วน Filter
-export interface SearchFiltersProps {
-  brands: string[];
-  selectedBrand: string;
-  setSelectedBrand: (brand: string) => void;
-  
-  // เพิ่ม Category เข้ามา
-  categories: string[];
-  selectedCategory: string;
-  setSelectedCategory: (category: string) => void;
+// Type สำหรับ Log การเคลื่อนไหวของสต็อก
+export interface StockMovement {
+  id?: string;
+  productId: string;
+  variantId: string;
+  dotCode: string;
+  type: 'sell' | 'receive' | 'adjust' | 'transfer-out' | 'transfer-in';
+  qtyChange: number;
+  newQty: number;
+  price?: number;
+  reason?: string;
+  relatedTransferId?: string;
+  createdAt: any; // Firestore Timestamp
+}
 
-  // เพิ่ม Status เข้ามา
-  statuses: string[];
-  selectedStatus: string;
-  setSelectedStatus: (status: string) => void;
+// Type สำหรับ Order (Transfer)
+export interface OrderItem {
+  productId: string;
+  productName: string;
+  specification: string;
+  dotCode: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  variantId?: string;
+}
 
-  searchTerm: string;
-  setSearchTerm: (term: string) => void;
-
-  // ส่วนนี้อาจจะไม่จำเป็นแล้วใน UI ใหม่ แต่เก็บไว้เผื่อใช้
-  priceRange: string;
-  setPriceRange: (value: string) => void;
-  availability: string;
-  setAvailability: (value: string) => void;
-  promotionStatus: string;
-  setPromotionStatus: (value: string) => void;
-  stores: string[];
-  selectedStore: string;
-  setSelectedStore: (store: string) => void;
-  
-  onRefresh: () => void;
-  isLoading: boolean;
+export interface Order {
+  id?: string;
+  orderNumber: string;
+  buyerBranchId: string;
+  buyerBranchName: string;
+  sellerBranchId: string;
+  sellerBranchName: string;
+  items: OrderItem[];
+  totalAmount: number;
+  status: 'pending' | 'requested' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'paid';
+  createdAt: any;
+  updatedAt?: any;
+  notes?: string;
 }

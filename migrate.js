@@ -91,7 +91,7 @@ async function migrateData() {
   writes.push({
     op: 'set',
     ref: storeDocRef,
-    data: { branchName: storeName, isActive: true },
+    data: { branchName: storeName, isActive: true, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
     options: { merge: true },
   });
 
@@ -116,8 +116,18 @@ async function migrateData() {
     const variantDocRef = modelDocRef.collection('variants').doc(variantId);
 
     // upsert brand/model/variant
-    writes.push({ op: 'set', ref: brandDocRef, data: { brandName: brand }, options: { merge: true } });
-    writes.push({ op: 'set', ref: modelDocRef, data: { modelName: model }, options: { merge: true } });
+    writes.push({
+      op: 'set',
+      ref: brandDocRef,
+      data: { brandName: brand, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      options: { merge: true },
+    });
+    writes.push({
+      op: 'set',
+      ref: modelDocRef,
+      data: { modelName: model, updatedAt: admin.firestore.FieldValue.serverTimestamp() },
+      options: { merge: true },
+    });
     writes.push({
       op: 'set',
       ref: variantDocRef,
@@ -146,14 +156,20 @@ async function migrateData() {
 
       const dotCode = String(dotCodeRaw || '').trim();
       const qty = toInt(qtyRaw);
-      const promo = promoRaw === undefined ? undefined : toNum(promoRaw, null);
+      // ให้รองรับโปร 0 ได้ และไม่พังถ้าเป็นค่าว่าง
+      const promo =
+        promoRaw === undefined || String(promoRaw).trim() === ''
+          ? null
+          : toNum(promoRaw, null);
 
       if (!dotCode || qty <= 0) continue;
 
       const dotRef = variantDocRef.collection('dots').doc(dotCode);
       const dotData = {
         qty,
-        ...(promo ? { promoPrice: promo } : {}),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        ...(promo !== null ? { promoPrice: promo } : {}), // ✅ 0 ก็ถูกเก็บ
       };
 
       writes.push({ op: 'set', ref: dotRef, data: dotData, options: { merge: true } });
@@ -170,8 +186,7 @@ async function migrateData() {
   console.log(`🎉 Done. products=${productCount}, dots=${dotCount}`);
 }
 
-migrateData()
-  .catch((e) => {
-    console.error('❌ Import failed', e);
-    process.exit(1);
-  });
+migrateData().catch((e) => {
+  console.error('❌ Import failed', e);
+  process.exit(1);
+});
