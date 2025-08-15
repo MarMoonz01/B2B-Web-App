@@ -16,12 +16,17 @@ import {
   Table as TableIcon,
   Grid3X3,
   MoreHorizontal,
+  Settings,
+  TrendingUp,
+  TrendingDown,
+  AlertTriangle,
+  Boxes,
+  ArrowLeftRight,
 } from 'lucide-react';
 import { toast } from 'sonner';
-
 // services & types
 import { InventoryService, StoreService } from '@/lib/services/InventoryService';
-import type { GroupedProduct } from '@/types/inventory';
+import type { GroupedProduct } from '@/lib/services/InventoryService';
 
 // shadcn/ui
 import { Button } from '@/components/ui/button';
@@ -34,12 +39,14 @@ import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Textarea } from '@/components/ui/textarea';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
   DialogFooter,
+  DialogDescription,
 } from '@/components/ui/dialog';
 import {
   DropdownMenu,
@@ -47,7 +54,14 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuLabel,
+  DropdownMenuSeparator,
 } from '@/components/ui/dropdown-menu';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 type SortKey =
   | 'relevance'
@@ -86,14 +100,19 @@ type Row = {
   specHighlight: string;
   available: number;
   minPrice: number;
+  maxPrice: number;
   hasPromo: boolean;
-  dotChips: { dotCode: string; qty: number; price: number }[];
+  lowStock: boolean;
+  dotChips: { dotCode: string; qty: number; price: number; hasPromo: boolean }[];
   dotsAll: {
     dotCode: string;
     qty: number;
     price: number;
     spec: string;
     variantId: string;
+    hasPromo: boolean;
+    basePrice: number;
+    promoPrice?: number | null;
   }[];
   grouped: GroupedProduct;
   branchNode: any;
@@ -114,7 +133,12 @@ export default function MyInventory({
 
   // ---------- UI State ----------
   const [expandedKey, setExpandedKey] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<ViewMode>('table');
+  const [viewMode, setViewMode] = useState<ViewMode>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('myinv:viewMode') as ViewMode) || 'table';
+    }
+    return 'table';
+  });
 
   // Filters
   const [searchTerm, setSearchTerm] = useState('');
@@ -122,8 +146,47 @@ export default function MyInventory({
   const [selectedBrand, setSelectedBrand] = useState('All Brands');
   const [selectedSize, setSelectedSize] = useState('All Sizes');
   const [inStockOnly, setInStockOnly] = useState(true);
+  const [lowStockOnly, setLowStockOnly] = useState(false);
   const [hasPromotion, setHasPromotion] = useState(false);
   const [sortBy, setSortBy] = useState<SortKey>('relevance');
+
+  // Dialog states
+  const [openAddDot, setOpenAddDot] = useState<{ open: boolean; row?: Row | null }>({
+    open: false,
+    row: null,
+  });
+  const [openPromo, setOpenPromo] = useState<{
+    open: boolean;
+    row?: Row | null;
+    dot?: Row['dotsAll'][number] | null;
+  }>({ open: false, row: null, dot: null });
+  const [openDelete, setOpenDelete] = useState<{
+    open: boolean;
+    row?: Row | null;
+    dot?: Row['dotsAll'][number] | null;
+  }>({ open: false, row: null, dot: null });
+
+  // Form states
+  const [addForm, setAddForm] = useState<{
+    variantId: string;
+    dotCode: string;
+    qty: number;
+    promoPrice?: string;
+  }>({
+    variantId: '',
+    dotCode: '',
+    qty: 1,
+    promoPrice: '',
+  });
+  const [promoForm, setPromoForm] = useState<{ promoPrice: string }>({ promoPrice: '' });
+  const [availableVariants, setAvailableVariants] = useState<Array<{variantId: string, specification: string}>>([]);
+
+  // Save view mode to localStorage
+  useEffect(() => {
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('myinv:viewMode', viewMode);
+    }
+  }, [viewMode]);
 
   // ---------- Data ----------
   const invQuery = useQuery({
@@ -175,6 +238,8 @@ export default function MyInventory({
       let specHighlight = 'N/A';
       let specQtyMax = -1;
       let hasPromoAny = false;
+      let minPrice = Infinity;
+      let maxPrice = 0;
 
       for (const s of sizes as any[]) {
         const dots = (s.dots ?? []) as any[];
@@ -185,7 +250,11 @@ export default function MyInventory({
         }
         for (const d of dots) {
           const qty = Number(d.qty ?? 0);
-          const price = Number(d.promoPrice ?? d.basePrice ?? 0);
+          const basePrice = Number(d.basePrice ?? 0);
+          const promoPrice = d.promoPrice != null ? Number(d.promoPrice) : null;
+          const price = promoPrice ?? basePrice;
+          const hasPromo = promoPrice != null;
+          
           if (qty > 0) {
             allDots.push({
               dotCode: d.dotCode,
@@ -193,30 +262,49 @@ export default function MyInventory({
               price,
               spec: s.specification ?? 'N/A',
               variantId: String(s.variantId ?? ''),
+              hasPromo,
+              basePrice,
+              promoPrice,
             });
             totalUnits += qty;
+            
+            if (price > 0) {
+              minPrice = Math.min(minPrice, price);
+              maxPrice = Math.max(maxPrice, price);
+            }
           }
-          if (d.promoPrice != null) hasPromoAny = true;
+          if (hasPromo) hasPromoAny = true;
         }
       }
 
       if (inStockOnly && totalUnits <= 0) continue;
+      if (lowStockOnly && !(totalUnits > 0 && totalUnits < 6)) continue;
 
       allDots.sort((a, b) => b.qty - a.qty || a.price - b.price);
-      const minPrice = allDots.length ? Math.min(...allDots.map((d) => d.price)) : 0;
+      
+      if (minPrice === Infinity) minPrice = 0;
+
+      const dotChips = allDots.slice(0, 3).map(d => ({
+        dotCode: d.dotCode,
+        qty: d.qty,
+        price: d.price,
+        hasPromo: d.hasPromo,
+      }));
 
       out.push({
         key: `${p.id}__${b.branchId}`,
         productName: p.name,
         brand: p.brand,
-        model: p.model,
+        model: p.model || '',
         branchId: String(b.branchId),
         branchName: b.branchName,
         specHighlight,
         available: totalUnits,
         minPrice,
+        maxPrice,
         hasPromo: hasPromoAny,
-        dotChips: allDots.slice(0, 3),
+        lowStock: totalUnits > 0 && totalUnits < 6,
+        dotChips,
         dotsAll: allDots,
         grouped: p,
         branchNode: b,
@@ -248,7 +336,7 @@ export default function MyInventory({
         case 'price-low':
           return (a.minPrice || Infinity) - (b.minPrice || Infinity);
         case 'price-high':
-          return (b.minPrice || 0) - (a.minPrice || 0);
+          return (b.maxPrice || 0) - (a.maxPrice || 0);
         case 'brand':
           return a.brand.localeCompare(b.brand);
         case 'name':
@@ -263,6 +351,7 @@ export default function MyInventory({
   }, [
     inventory,
     inStockOnly,
+    lowStockOnly,
     debouncedSearch,
     selectedBrand,
     selectedSize,
@@ -274,33 +363,30 @@ export default function MyInventory({
   const kpis = useMemo(() => {
     const products = rows.length;
     const units = rows.reduce((s, r) => s + r.available, 0);
-    const low = rows.filter((r) => r.available > 0 && r.available < 6).length;
-    const avgPrice = rows.length
-      ? Math.round(rows.reduce((s, r) => s + r.minPrice, 0) / rows.length)
-      : 0;
-    return { products, units, low, avgPrice };
+    const low = rows.filter((r) => r.lowStock).length;
+    const promo = rows.filter((r) => r.hasPromo).length;
+    const value = rows.reduce((s, r) => s + (r.available * r.minPrice), 0);
+    const avgPrice = rows.length ? Math.round(rows.reduce((s, r) => s + r.minPrice, 0) / rows.length) : 0;
+    return { products, units, low, promo, value, avgPrice };
   }, [rows]);
 
   // ---------- Stock adjust ----------
   const adjustMutation = useMutation({
     mutationFn: async (payload: {
-      brand: string;
-      model: string;
+      storeId: string;
+      brandId: string;
+      modelId: string;
       variantId: string;
       dotCode: string;
       qtyChange: number;
     }) => {
-      await InventoryService.createStockMovement(
-        myBranchId,
-        {
-          brand: payload.brand,
-          model: payload.model,
-          variantId: payload.variantId,
-          dotCode: payload.dotCode,
-        },
-        'adjust' as any,
-        payload.qtyChange,
-        { reason: 'Manual adjust from Inventory page' }
+      await InventoryService.adjustDotQuantity(
+        payload.storeId,
+        payload.brandId,
+        payload.modelId,
+        payload.variantId,
+        payload.dotCode,
+        payload.qtyChange
       );
     },
     onSuccess: () => {
@@ -317,56 +403,57 @@ export default function MyInventory({
     d: Row['dotsAll'][number],
     delta: number
   ) => {
+    const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
+    
     adjustMutation.mutate({
-      brand: r.brand,
-      model: r.model,
-      variantId: d.variantId,
-      dotCode: d.dotCode,
+      storeId: productInfo.storeId,
+      brandId: productInfo.brandId,
+      modelId: productInfo.modelId,
+      variantId: productInfo.variantId,
+      dotCode: productInfo.dotCode,
       qtyChange: delta,
     });
   };
 
-  // ====== Expanded-row actions state ======
-  const [openAddDot, setOpenAddDot] = useState<{ open: boolean; row?: Row | null }>({
-    open: false,
-    row: null,
-  });
-  const [openPromo, setOpenPromo] = useState<{
-    open: boolean;
-    row?: Row | null;
-    dot?: Row['dotsAll'][number] | null;
-  }>({ open: false, row: null, dot: null });
-  const [openDelete, setOpenDelete] = useState<{
-    open: boolean;
-    row?: Row | null;
-    dot?: Row['dotsAll'][number] | null;
-  }>({ open: false, row: null, dot: null });
+  // ---------- Add DOT ----------
+  const openAddDotDialog = async (r: Row) => {
+    const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, '', '');
+    
+    try {
+      const variants = await InventoryService.getVariantsForProduct(
+        productInfo.storeId,
+        productInfo.brandId,
+        productInfo.modelId
+      );
+      
+      setAddForm({
+        variantId: variants[0]?.variantId ?? '',
+        dotCode: '',
+        qty: 1,
+        promoPrice: '',
+      });
+      
+      setAvailableVariants(variants);
+      setOpenAddDot({ open: true, row: r });
+    } catch (error) {
+      toast.error('Failed to load variants');
+    }
+  };
 
-  const [addForm, setAddForm] = useState<{
-    variantId: string;
-    dotCode: string;
-    qty: number;
-    promoPrice?: string;
-  }>({
-    variantId: '',
-    dotCode: '',
-    qty: 1,
-    promoPrice: '',
-  });
-  const [promoForm, setPromoForm] = useState<{ promoPrice: string }>({ promoPrice: '' });
-
-  // สร้าง DOT / อัปเดต qty+promo พร้อมกัน
   const upsertDotMutation = useMutation({
     mutationFn: async () => {
       const r = openAddDot.row!;
-      await InventoryService.upsertDot(myBranchId, {
-        brand: r.brand,
-        model: r.model,
-        variantId: addForm.variantId,
-        dotCode: addForm.dotCode.trim(),
-        qty: Number(addForm.qty) || 0,
-        promoPrice: addForm.promoPrice?.trim() ? Number(addForm.promoPrice) : undefined,
-      });
+      const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, addForm.variantId, addForm.dotCode);
+      
+      await InventoryService.addNewDot(
+        productInfo.storeId,
+        productInfo.brandId,
+        productInfo.modelId,
+        productInfo.variantId,
+        addForm.dotCode.trim(),
+        Number(addForm.qty) || 0,
+        addForm.promoPrice?.trim() ? Number(addForm.promoPrice) : undefined
+      );
     },
     onSuccess: () => {
       toast.success('DOT saved');
@@ -376,18 +463,22 @@ export default function MyInventory({
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
 
+  // ---------- Set Promo ----------
   const setPromoMutation = useMutation({
     mutationFn: async () => {
       const r = openPromo.row!;
       const d = openPromo.dot!;
       const val = promoForm.promoPrice.trim();
-      await InventoryService.setPromoPrice(myBranchId, {
-        brand: r.brand,
-        model: r.model,
-        variantId: d.variantId,
-        dotCode: d.dotCode,
-        promoPrice: val === '' ? null : Number(val),
-      });
+      const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
+      
+      await InventoryService.setPromoPrice(
+        productInfo.storeId,
+        productInfo.brandId,
+        productInfo.modelId,
+        productInfo.variantId,
+        productInfo.dotCode,
+        val === '' ? null : Number(val)
+      );
     },
     onSuccess: () => {
       toast.success('Promo updated');
@@ -397,16 +488,20 @@ export default function MyInventory({
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
 
+  // ---------- Delete DOT ----------
   const deleteDotMutation = useMutation({
     mutationFn: async () => {
       const r = openDelete.row!;
       const d = openDelete.dot!;
-      await InventoryService.deleteDot(myBranchId, {
-        brand: r.brand,
-        model: r.model,
-        variantId: d.variantId,
-        dotCode: d.dotCode,
-      });
+      const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
+      
+      await InventoryService.deleteDot(
+        productInfo.storeId,
+        productInfo.brandId,
+        productInfo.modelId,
+        productInfo.variantId,
+        productInfo.dotCode
+      );
     },
     onSuccess: () => {
       toast.success('DOT deleted');
@@ -418,9 +513,9 @@ export default function MyInventory({
 
   // ---------- Export CSV ----------
   const exportCSV = () => {
-    const header = ['Product', 'Brand', 'Model', 'Spec', 'Available', 'Min Price'];
+    const header = ['Product', 'Brand', 'Model', 'Spec', 'Available', 'Min Price', 'Max Price', 'Has Promo'];
     const rowsText = rows.map((r) =>
-      [r.productName, r.brand, r.model, r.specHighlight, r.available, r.minPrice]
+      [r.productName, r.brand, r.model, r.specHighlight, r.available, r.minPrice, r.maxPrice, r.hasPromo ? 'Yes' : 'No']
         .map((x) => `"${String(x).replace(/"/g, '""')}"`)
         .join(',')
     );
@@ -430,7 +525,7 @@ export default function MyInventory({
     const url = window.URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `my_inventory_${new Date().toISOString().slice(0, 19)}.csv`;
+    a.download = `inventory_${myBranchId}_${new Date().toISOString().slice(0, 19)}.csv`;
     document.body.appendChild(a);
     a.click();
     a.remove();
@@ -447,43 +542,75 @@ export default function MyInventory({
         </p>
       </div>
       <div className="flex items-center gap-2">
-        <Button variant="outline" size="sm" onClick={() => invQuery.refetch()}>
-          <RefreshCw className="h-4 w-4 mr-2" />
+        <Button variant="outline" size="sm" onClick={() => invQuery.refetch()} disabled={isLoading}>
+          <RefreshCw className={`h-4 w-4 mr-2 ${isLoading ? 'animate-spin' : ''}`} />
           Refresh
         </Button>
         <Button variant="outline" size="sm" onClick={exportCSV}>
           <Download className="h-4 w-4 mr-2" />
           Export CSV
         </Button>
+        {onNavigate && (
+          <Button size="sm" onClick={() => onNavigate('transfer_platform')}>
+            <ArrowLeftRight className="h-4 w-4 mr-2" />
+            Transfer Platform
+          </Button>
+        )}
       </div>
     </div>
   );
 
   const KPI = (
-    <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+    <div className="grid grid-cols-1 md:grid-cols-6 gap-3">
       <Card className="rounded-xl shadow-sm border-emerald-100">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Products</CardTitle>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Boxes className="h-4 w-4" />
+            Products
+          </CardTitle>
         </CardHeader>
         <CardContent className="text-2xl font-bold">{kpis.products}</CardContent>
       </Card>
       <Card className="rounded-xl shadow-sm border-blue-100">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Units in Stock</CardTitle>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <TrendingUp className="h-4 w-4" />
+            Units in Stock
+          </CardTitle>
         </CardHeader>
         <CardContent className="text-2xl font-bold">{kpis.units}</CardContent>
       </Card>
       <Card className="rounded-xl shadow-sm border-amber-100">
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Low Stock</CardTitle>
+          <CardTitle className="text-sm flex items-center gap-2">
+            <AlertTriangle className="h-4 w-4" />
+            Low Stock
+          </CardTitle>
         </CardHeader>
-        <CardContent className="text-2xl font-bold">{kpis.low}</CardContent>
+        <CardContent className="text-2xl font-bold text-amber-600">{kpis.low}</CardContent>
+      </Card>
+      <Card className="rounded-xl shadow-sm border-green-100">
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <TrendingDown className="h-4 w-4" />
+            On Sale
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="text-2xl font-bold text-green-600">{kpis.promo}</CardContent>
       </Card>
       <Card className="rounded-xl shadow-sm border-teal-100">
         <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Inventory Value</CardTitle>
+        </CardHeader>
+        <CardContent className="text-lg font-bold">
+          {formatTHB(kpis.value)}
+        </CardContent>
+      </Card>
+      <Card className="rounded-xl shadow-sm border-purple-100">
+        <CardHeader className="pb-2">
           <CardTitle className="text-sm">Avg Price</CardTitle>
         </CardHeader>
-        <CardContent className="text-2xl font-bold">
+        <CardContent className="text-lg font-bold">
           {formatTHB(kpis.avgPrice)}
         </CardContent>
       </Card>
@@ -492,7 +619,7 @@ export default function MyInventory({
 
   const FilterBar = (
     <div className="border-b bg-muted/20 p-6">
-      <div className="max-w-7xl mx-auto space-y-4">
+    <div className="w-full space-y-4">
         {/* Search & Sort */}
         <div className="flex items-center gap-4">
           <div className="relative flex-1 max-w-md">
@@ -522,36 +649,56 @@ export default function MyInventory({
 
           {/* View toggle */}
           <div className="ml-auto inline-flex rounded-md border bg-background p-1">
-            <Button
-              size="sm"
-              variant={viewMode === 'table' ? 'default' : 'ghost'}
-              onClick={() => setViewMode('table')}
-              className="gap-1"
-              title="Table view"
-            >
-              <TableIcon className="h-4 w-4" />
-              Table
-            </Button>
-            <Button
-              size="sm"
-              variant={viewMode === 'grid' ? 'default' : 'ghost'}
-              onClick={() => setViewMode('grid')}
-              className="gap-1"
-              title="Grid cards"
-            >
-              <LayoutGrid className="h-4 w-4" />
-              Grid
-            </Button>
-            <Button
-              size="sm"
-              variant={viewMode === 'matrix' ? 'default' : 'ghost'}
-              onClick={() => setViewMode('matrix')}
-              className="gap-1"
-              title="Matrix by DOT × Size"
-            >
-              <Grid3X3 className="h-4 w-4" />
-              Matrix
-            </Button>
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant={viewMode === 'table' ? 'default' : 'ghost'}
+                    onClick={() => setViewMode('table')}
+                    className="gap-1"
+                  >
+                    <TableIcon className="h-4 w-4" />
+                    Table
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Table view with expandable rows</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant={viewMode === 'grid' ? 'default' : 'ghost'}
+                    onClick={() => setViewMode('grid')}
+                    className="gap-1"
+                  >
+                    <LayoutGrid className="h-4 w-4" />
+                    Grid
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Grid cards view</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+            
+            <TooltipProvider>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    size="sm"
+                    variant={viewMode === 'matrix' ? 'default' : 'ghost'}
+                    onClick={() => setViewMode('matrix')}
+                    className="gap-1"
+                  >
+                    <Grid3X3 className="h-4 w-4" />
+                    Matrix
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>Matrix view (DOT × Size)</TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
           </div>
         </div>
 
@@ -595,6 +742,14 @@ export default function MyInventory({
 
           <div className="flex items-center gap-2">
             <Switch
+              checked={lowStockOnly}
+              onCheckedChange={(v) => setLowStockOnly(Boolean(v))}
+            />
+            <Label>Low Stock (&lt; 6)</Label>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Switch
               checked={hasPromotion}
               onCheckedChange={(v) => setHasPromotion(Boolean(v))}
             />
@@ -616,7 +771,7 @@ export default function MyInventory({
       <div>Product</div>
       <div>Branch</div>
       <div className="text-right">Available</div>
-      <div className="text-right">Min Price</div>
+      <div className="text-right">Price Range</div>
       <div />
     </div>
   );
@@ -657,14 +812,33 @@ export default function MyInventory({
                   )}
                 </button>
                 <div>
-                  <div className="font-medium">{r.productName}</div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-medium">{r.productName}</span>
+                    {r.hasPromo && (
+                      <Badge variant="secondary" className="text-xs">
+                        Sale
+                      </Badge>
+                    )}
+                    {r.lowStock && (
+                      <Badge variant="destructive" className="text-xs">
+                        Low
+                      </Badge>
+                    )}
+                  </div>
+                  <div className="text-xs text-muted-foreground">
+                    {r.brand} {r.model && `• ${r.model}`}
+                  </div>
                   {/* chips */}
                   {r.dotChips.length > 0 && (
                     <div className="mt-1 flex flex-wrap gap-1">
                       {r.dotChips.map((chip, i) => (
                         <span
                           key={`${r.key}-chip-${chip.dotCode}-${i}`}
-                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-[10px]"
+                          className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
+                            chip.hasPromo 
+                              ? 'bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-50' 
+                              : 'bg-muted'
+                          }`}
                         >
                           <span className="font-mono">{chip.dotCode}</span>
                           <span>×{chip.qty}</span>
@@ -692,14 +866,24 @@ export default function MyInventory({
 
               {/* Available */}
               <div className="text-right">
-                <Badge variant={r.available < 6 ? 'destructive' : 'secondary'}>
+                <Badge variant={r.lowStock ? 'destructive' : 'secondary'}>
                   {r.available} units
                 </Badge>
               </div>
 
-              {/* Min Price */}
+              {/* Price Range */}
               <div className="text-right">
-                {r.minPrice > 0 ? formatTHB(r.minPrice) : '—'}
+                {r.minPrice > 0 ? (
+                  r.minPrice === r.maxPrice ? (
+                    formatTHB(r.minPrice)
+                  ) : (
+                    <div className="text-xs">
+                      {formatTHB(r.minPrice)} - {formatTHB(r.maxPrice)}
+                    </div>
+                  )
+                ) : (
+                  '—'
+                )}
               </div>
 
               {/* Actions */}
@@ -728,20 +912,7 @@ export default function MyInventory({
                   {/* ปุ่ม Add DOT */}
                   <Button
                     size="sm"
-                    onClick={() => {
-                      const sizes: Array<{ specification: string; variantId: string }> =
-                        (r.branchNode?.sizes ?? []).map((s: any) => ({
-                          specification: s.specification,
-                          variantId: String(s.variantId ?? ''),
-                        }));
-                      setAddForm({
-                        variantId: sizes[0]?.variantId ?? '',
-                        dotCode: '',
-                        qty: 1,
-                        promoPrice: '',
-                      });
-                      setOpenAddDot({ open: true, row: r });
-                    }}
+                    onClick={() => openAddDotDialog(r)}
                   >
                     + Add DOT
                   </Button>
@@ -764,7 +935,18 @@ export default function MyInventory({
                     <div className="col-span-4 font-mono">{d.dotCode}</div>
                     <div className="col-span-3">{d.spec}</div>
                     <div className="col-span-2 text-right">{d.qty}</div>
-                    <div className="col-span-2 text-right">{formatTHB(d.price)}</div>
+                    <div className="col-span-2 text-right">
+                      <div className="flex flex-col items-end">
+                        <span className={d.hasPromo ? 'text-green-600 font-medium' : ''}>
+                          {formatTHB(d.price)}
+                        </span>
+                        {d.hasPromo && d.basePrice !== d.price && (
+                          <span className="text-xs text-muted-foreground line-through">
+                            {formatTHB(d.basePrice)}
+                          </span>
+                        )}
+                      </div>
+                    </div>
                     <div className="col-span-1">
                       <div className="flex items-center justify-end gap-1">
                         {/* +- ปรับสต็อก */}
@@ -799,12 +981,16 @@ export default function MyInventory({
                             <DropdownMenuLabel>Actions</DropdownMenuLabel>
                             <DropdownMenuItem
                               onClick={() => {
-                                setPromoForm({ promoPrice: '' });
+                                setPromoForm({ 
+                                  promoPrice: d.promoPrice ? String(d.promoPrice) : '' 
+                                });
                                 setOpenPromo({ open: true, row: r, dot: d });
                               }}
                             >
+                              <Settings className="h-4 w-4 mr-2" />
                               Set promo price…
                             </DropdownMenuItem>
+                            <DropdownMenuSeparator />
                             <DropdownMenuItem
                               className="text-red-600 focus:text-red-600"
                               onClick={() => setOpenDelete({ open: true, row: r, dot: d })}
@@ -834,14 +1020,20 @@ export default function MyInventory({
           ))
         : rows.length
         ? rows.map((r) => (
-            <Card key={r.key} className="relative">
-              <div className="absolute top-3 right-3">
-                <Badge variant={r.available < 6 ? 'destructive' : 'secondary'}>
+            <Card key={r.key} className="relative hover:shadow-md transition-shadow">
+              <div className="absolute top-3 right-3 flex gap-1">
+                <Badge variant={r.lowStock ? 'destructive' : 'secondary'}>
                   {r.available} units
                 </Badge>
+                {r.hasPromo && (
+                  <Badge variant="secondary" className="bg-green-100 text-green-800">
+                    Sale
+                  </Badge>
+                )}
               </div>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">{r.productName}</CardTitle>
+                <CardTitle className="text-base pr-20">{r.productName}</CardTitle>
+                <CardDescription>{r.brand} {r.model && `• ${r.model}`}</CardDescription>
                 <div className="text-xs text-muted-foreground">{r.specHighlight}</div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -850,7 +1042,11 @@ export default function MyInventory({
                     {r.dotChips.map((chip, i) => (
                       <span
                         key={`${r.key}-chip-grid-${chip.dotCode}-${i}`}
-                        className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-muted text-[10px]"
+                        className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
+                          chip.hasPromo 
+                            ? 'bg-green-100 text-green-800' 
+                            : 'bg-muted'
+                        }`}
                       >
                         <span className="font-mono">{chip.dotCode}</span>
                         <span>×{chip.qty}</span>
@@ -869,27 +1065,45 @@ export default function MyInventory({
                     </div>
                   </div>
                   <div className="flex items-center justify-end gap-2">
-                    <span className="text-sm font-semibold">
-                      {r.minPrice > 0 ? formatTHB(r.minPrice) : '—'}
-                    </span>
+                    <div className="text-right">
+                      <div className="text-sm font-semibold">
+                        {r.minPrice > 0 ? (
+                          r.minPrice === r.maxPrice ? (
+                            formatTHB(r.minPrice)
+                          ) : (
+                            <div className="text-xs">
+                              {formatTHB(r.minPrice)} - {formatTHB(r.maxPrice)}
+                            </div>
+                          )
+                        ) : (
+                          '—'
+                        )}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="flex items-center justify-end gap-1">
+                <div className="flex items-center justify-between gap-2">
                   <Button
-                    size="icon"
+                    size="sm"
                     variant="outline"
-                    className="h-8 w-8"
+                    onClick={() => openAddDotDialog(r)}
+                  >
+                    + Add DOT
+                  </Button>
+                  <Button
+                    size="sm"
                     onClick={() => setExpandedKey(r.key)}
                     title="Manage"
                   >
-                    <ChevronDown className="h-4 w-4" />
+                    <Settings className="h-4 w-4 mr-2" />
+                    Manage
                   </Button>
                 </div>
 
                 {/* inline expanded in card */}
                 {expandedKey === r.key && (
-                  <div className="bg-slate-50 rounded-lg px-3 py-2">
+                  <div className="bg-slate-50 rounded-lg px-3 py-2 mt-3">
                     <div className="text-xs text-muted-foreground mb-1 flex items-center gap-2">
                       <Info className="h-3.5 w-3.5" />
                       DOT details
@@ -905,7 +1119,9 @@ export default function MyInventory({
                             <div className="text-xs text-muted-foreground">{d.spec}</div>
                           </div>
                           <div className="text-right">
-                            <div className="text-xs">{formatTHB(d.price)}</div>
+                            <div className={`text-xs ${d.hasPromo ? 'text-green-600' : ''}`}>
+                              {formatTHB(d.price)}
+                            </div>
                             <div className="text-xs text-muted-foreground">Qty: {d.qty}</div>
                           </div>
                           <div className="flex items-center gap-1">
@@ -957,20 +1173,33 @@ export default function MyInventory({
           const specs = Array.from(new Set(r.dotsAll.map((d) => d.spec))).sort();
           const dots = Array.from(new Set(r.dotsAll.map((d) => d.dotCode))).sort();
 
-          const cellMap = new Map<string, { qty: number; price: number; variantId: string }>();
+          const cellMap = new Map<string, { qty: number; price: number; variantId: string; hasPromo: boolean }>();
           r.dotsAll.forEach((d) => {
             cellMap.set(`${d.spec}__${d.dotCode}`, {
               qty: d.qty,
               price: d.price,
               variantId: d.variantId,
+              hasPromo: d.hasPromo,
             });
           });
 
           return (
             <Card key={`matrix-${r.key}`} className="overflow-hidden">
               <CardHeader className="pb-2">
-                <CardTitle className="text-base">{r.productName}</CardTitle>
-                <CardDescription>{r.branchName}</CardDescription>
+                <CardTitle className="text-base flex items-center justify-between">
+                  <span>{r.productName}</span>
+                  <div className="flex gap-1">
+                    {r.hasPromo && (
+                      <Badge variant="secondary" className="bg-green-100 text-green-800">
+                        Sale
+                      </Badge>
+                    )}
+                    <Badge variant={r.lowStock ? 'destructive' : 'secondary'}>
+                      {r.available} units
+                    </Badge>
+                  </div>
+                </CardTitle>
+                <CardDescription>{r.branchName} • {r.brand} {r.model}</CardDescription>
               </CardHeader>
               <CardContent className="pt-2">
                 <ScrollArea className="w-full">
@@ -1006,6 +1235,7 @@ export default function MyInventory({
                             const cell = cellMap.get(`${spec}__${dc}`);
                             const qty = cell?.qty ?? 0;
                             const price = cell?.price ?? 0;
+                            const hasPromo = cell?.hasPromo ?? false;
                             if (qty > 0) rowTotal += qty;
                             return (
                               <div
@@ -1015,7 +1245,7 @@ export default function MyInventory({
                                 {qty > 0 ? (
                                   <div className="flex flex-col items-center gap-1">
                                     <div className="text-xs font-mono">{qty}</div>
-                                    <div className="text-[10px] text-muted-foreground">
+                                    <div className={`text-[10px] ${hasPromo ? 'text-green-600' : 'text-muted-foreground'}`}>
                                       {formatTHB(price)}
                                     </div>
                                     <div className="flex items-center gap-1">
@@ -1032,6 +1262,9 @@ export default function MyInventory({
                                               price,
                                               spec,
                                               variantId: cell!.variantId,
+                                              hasPromo,
+                                              basePrice: price,
+                                              promoPrice: hasPromo ? price : null,
                                             },
                                             -1
                                           )
@@ -1053,6 +1286,9 @@ export default function MyInventory({
                                               price,
                                               spec,
                                               variantId: cell!.variantId,
+                                              hasPromo,
+                                              basePrice: price,
+                                              promoPrice: hasPromo ? price : null,
                                             },
                                             +1
                                           )
@@ -1141,6 +1377,9 @@ export default function MyInventory({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Add DOT</DialogTitle>
+            <DialogDescription>
+              Add a new DOT code to {openAddDot.row?.productName}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             {/* เลือกสเปค (variant) */}
@@ -1154,9 +1393,9 @@ export default function MyInventory({
                   <SelectValue placeholder="Select size/spec" />
                 </SelectTrigger>
                 <SelectContent>
-                  {(openAddDot.row?.branchNode?.sizes ?? []).map((s: any) => (
-                    <SelectItem key={String(s.variantId)} value={String(s.variantId)}>
-                      {s.specification}
+                  {availableVariants.map((variant) => (
+                    <SelectItem key={variant.variantId} value={variant.variantId}>
+                      {variant.specification}
                     </SelectItem>
                   ))}
                 </SelectContent>
@@ -1192,6 +1431,7 @@ export default function MyInventory({
                   className="mt-1"
                   value={addForm.promoPrice}
                   onChange={(e) => setAddForm((f) => ({ ...f, promoPrice: e.target.value }))}
+                  placeholder="Leave empty for no promo"
                 />
               </div>
             </div>
@@ -1220,14 +1460,17 @@ export default function MyInventory({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Set promo price</DialogTitle>
+            <DialogDescription>
+              Update promotional pricing for DOT {openPromo.dot?.dotCode}
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
             <div className="text-xs text-muted-foreground">
-              DOT: <span className="font-mono">{openPromo.dot?.dotCode}</span> · Spec:{' '}
+              DOT: <span className="font-mono">{openPromo.dot?.dotCode}</span> • Spec:{' '}
               {openPromo.dot?.spec}
             </div>
             <div>
-              <Label className="text-xs">Promo price (ว่าง = ลบราคาโปร)</Label>
+              <Label className="text-xs">Promo price (leave empty to remove promo)</Label>
               <Input
                 type="number"
                 min={0}
@@ -1236,6 +1479,9 @@ export default function MyInventory({
                 onChange={(e) => setPromoForm({ promoPrice: e.target.value })}
                 placeholder="e.g. 2500"
               />
+              <div className="text-xs text-muted-foreground mt-1">
+                Current base price: {openPromo.dot ? formatTHB(openPromo.dot.basePrice) : '—'}
+              </div>
             </div>
           </div>
           <DialogFooter>
@@ -1266,14 +1512,16 @@ export default function MyInventory({
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle>Delete DOT</DialogTitle>
+            <DialogDescription>
+              This action cannot be undone. This will permanently delete the DOT from your inventory.
+            </DialogDescription>
           </DialogHeader>
           <div className="space-y-2 text-sm">
             <div>
-              ต้องการลบ DOT <span className="font-mono">{openDelete.dot?.dotCode}</span> (
-              {openDelete.dot?.spec}) ใช่ไหม?
+              Are you sure you want to delete DOT <span className="font-mono font-semibold">{openDelete.dot?.dotCode}</span> ({openDelete.dot?.spec})?
             </div>
             <div className="text-muted-foreground text-xs">
-              การลบนี้จะลบทั้งเอกสาร DOT ออกจาก variant นั้น
+              Current quantity: {openDelete.dot?.qty || 0} units
             </div>
           </div>
           <DialogFooter>
@@ -1288,7 +1536,7 @@ export default function MyInventory({
               onClick={() => deleteDotMutation.mutate()}
               disabled={deleteDotMutation.isPending}
             >
-              {deleteDotMutation.isPending ? 'Deleting…' : 'Delete'}
+              {deleteDotMutation.isPending ? 'Deleting…' : 'Delete DOT'}
             </Button>
           </DialogFooter>
         </DialogContent>

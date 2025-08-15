@@ -21,11 +21,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <SidebarProvider>
                 <div className="flex min-h-screen">
                   <AppSidebar />
-                  <main className="flex-1">
-                    <div className="container mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-                      {children}
-                    </div>
-                  </main>
+                  {/* เพิ่ม min-w-0 ป้องกัน layout บีบ และปล่อยให้กินเต็มความกว้าง */}
+                  <main className="flex-1 overflow-x-hidden">
+  <div className="w-full px-4 py-6 sm:px-6 lg:px-8">
+    {children}
+  </div>
+</main>
                 </div>
               </SidebarProvider>
             </BranchProvider>

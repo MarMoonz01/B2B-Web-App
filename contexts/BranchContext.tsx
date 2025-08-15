@@ -1,4 +1,3 @@
-// src/contexts/BranchContext.tsx
 'use client';
 
 import React, {
@@ -22,6 +21,7 @@ export type Branch = {
 type BranchContextType = {
   branches: Branch[];
   loading: boolean;
+  error: string | null;
   selectedBranchId: string | null;
   selectedBranch: Branch | null;
   setSelectedBranchId: (id: string) => void;
@@ -30,51 +30,66 @@ type BranchContextType = {
 
 const BranchContext = createContext<BranchContextType | null>(null);
 
-// ใช้ key เดียวกับ BranchSelect เพื่อให้ sync กัน
 const LS_KEY = 'branchId';
 
 export function BranchProvider({ children }: { children: React.ReactNode }) {
   const [branches, setBranches] = useState<Branch[]>([]);
   const [loading, setLoading] = useState(true);
-  const [selectedBranchId, setSelectedBranchIdState] = useState<string | null>(
-    null
-  );
+  const [error, setError] = useState<string | null>(null);
+  const [selectedBranchId, setSelectedBranchIdState] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // โหลดสาขาแบบ realtime จาก Firestore (collection: stores)
+  // โหลดสาขาแบบ realtime จาก Firestore
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'stores'), (snap) => {
-      const list: Branch[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          branchName: data.branchName ?? d.id,
-          location: data.location,
-          isActive: data.isActive !== false,
-          orgId: data.orgId,
-        };
-      });
+    console.log('🔥 BranchProvider: Setting up Firestore listener...');
+    
+    const unsub = onSnapshot(
+      collection(db, 'stores'), 
+      (snap) => {
+        console.log('🔥 BranchProvider: Received Firestore update');
+        console.log('📋 Raw documents:', snap.docs.map(d => ({ id: d.id, data: d.data() })));
+        
+        const list: Branch[] = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            branchName: data.branchName ?? d.id,
+            location: data.location,
+            isActive: data.isActive !== false,
+            orgId: data.orgId,
+          };
+        });
 
-      setBranches(list);
-      setLoading(false);
+        console.log('🏪 Processed branches:', list);
+        setBranches(list);
+        setLoading(false);
+        setError(null);
 
-      // ตั้งค่าเริ่มต้นให้ selectedBranchId หากยังไม่มี
-      if (!selectedBranchId) {
-        const saved =
-          (typeof window !== 'undefined' && localStorage.getItem(LS_KEY)) || '';
-        const validSaved =
-          saved && list.find((b) => b.id === saved) ? saved : null;
-        const pick = validSaved ?? (list[0]?.id ?? null);
-        if (pick) setSelectedBranchIdState(pick);
+        // ตั้งค่าเริ่มต้นให้ selectedBranchId หากยังไม่มี
+        if (!selectedBranchId && list.length > 0) {
+          const saved = typeof window !== 'undefined' ? localStorage.getItem(LS_KEY) : null;
+          const validSaved = saved && list.find((b) => b.id === saved) ? saved : null;
+          const pick = validSaved ?? list[0]?.id ?? null;
+          
+          console.log('🎯 Auto-selecting branch:', pick);
+          if (pick) setSelectedBranchIdState(pick);
+        }
+      },
+      (err) => {
+        console.error('❌ BranchProvider: Firestore error:', err);
+        setError(err.message);
+        setLoading(false);
       }
-    });
+    );
 
-    return () => unsub();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return () => {
+      console.log('🔥 BranchProvider: Cleaning up Firestore listener');
+      unsub();
+    };
+  }, [selectedBranchId]);
 
-  // sync กับ localStorage และ trigger refresh UI
   const setSelectedBranchId = (id: string) => {
+    console.log('🎯 BranchProvider: Selecting branch:', id);
     setSelectedBranchIdState(id);
     if (typeof window !== 'undefined') {
       localStorage.setItem(LS_KEY, id);
@@ -90,6 +105,7 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
   const value: BranchContextType = {
     branches,
     loading,
+    error,
     selectedBranchId,
     selectedBranch,
     setSelectedBranchId,
