@@ -1,7 +1,9 @@
 import { initializeApp, getApps, getApp } from 'firebase/app';
 import {
   initializeFirestore,
-  // CACHE_SIZE_UNLIMITED, // ใช้ถ้าอยากเปิดแคชใหญ่
+  connectFirestoreEmulator,
+  enableNetwork,
+  disableNetwork,
 } from 'firebase/firestore';
 
 const config = {
@@ -13,18 +15,32 @@ const config = {
   appId: process.env.NEXT_PUBLIC_FB_APP_ID,
 };
 
-// ตรวจ env ให้ครบ (ถ้าอยากปิด ก็ลบบล็อก for...of นี้ได้)
-for (const [k, v] of Object.entries(config)) {
-  if (!v) throw new Error(`Missing Firebase env var: ${k}`);
+// 🐛 Debug: แสดงค่า config
+console.log('🔥 Firebase Config:', {
+  hasApiKey: !!config.apiKey,
+  hasAuthDomain: !!config.authDomain,
+  projectId: config.projectId,
+  hasStorageBucket: !!config.storageBucket,
+  hasMessagingSenderId: !!config.messagingSenderId,
+  hasAppId: !!config.appId,
+});
+
+// ตรวจสอบว่ามี env vars ครบไหม
+for (const [key, value] of Object.entries(config)) {
+  if (!value) {
+    console.error(`❌ Missing Firebase env var: NEXT_PUBLIC_FB_${key.toUpperCase()}`);
+    throw new Error(`Missing Firebase configuration: ${key}`);
+  }
 }
 
-export const app = getApps().length ? getApp() : initializeApp(config as any);
+export const app = getApps().length ? getApp() : initializeApp(config);
 
-// ใช้ initializeFirestore พร้อม fallback โหมดเครือข่าย
+// สร้าง Firestore instance พร้อม debug
 export const db = initializeFirestore(app, {
-  // ถ้าเครือข่าย/ปลั๊กอินบล็อกสตรีม จะสลับไป long-polling ให้อัตโนมัติ
   experimentalAutoDetectLongPolling: true,
-  // ปิด fetch streams เพื่อเลี่ยงปัญหา proxy บางประเภท (ลองเปิดเป็น true หากเครือข่ายคุณรองรับ)
   useFetchStreams: false,
-  // cacheSizeBytes: CACHE_SIZE_UNLIMITED,
 });
+
+// 🐛 Debug: ทดสอบการเชื่อมต่อ
+console.log('🔥 Firebase App initialized:', app.name);
+console.log('🔥 Firestore instance created');
