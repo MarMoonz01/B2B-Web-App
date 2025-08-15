@@ -1,456 +1,479 @@
-// lib/services/InventoryService.ts
+// src/lib/services/InventoryService.ts
 import {
-  collection,
-  getDocs,
-  doc,
-  runTransaction,
-  query,
-  where,
-  serverTimestamp,
   addDoc,
-  orderBy,
-  writeBatch,
+  collection,
+  collectionGroup,
+  doc,
   getDoc,
-  deleteDoc,
-  deleteField,
+  getDocs,
+  query,
+  serverTimestamp,
+  setDoc,
+  Timestamp,
+  updateDoc,
+  where,
+  writeBatch,
+  increment,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import type {
-  GroupedProduct,
-  StockMovement,
-  Order,
-  OrderItem,
-  SizeDetail,
-  DotDetail,
-} from '@/types/inventory';
 
-// ---------- UTILS ----------
-const toId = (s: string) =>
-  String(s || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[\/\s]+/g, '-');
-
-async function resolveVariantId(params: {
-  sellerBranchId: string;
-  brand: string;
-  model: string;
-  specification: string;
-}): Promise<string> {
-  const { sellerBranchId, brand, model, specification } = params;
-  const brandId = toId(brand);
-  const modelId = toId(model);
-  const wantSpecId = toId(specification);
-
-  const variantsRef = collection(
-    db,
-    'stores',
-    sellerBranchId,
-    'inventory',
-    brandId,
-    'models',
-    modelId,
-    'variants'
-  );
-  const snap = await getDocs(variantsRef);
-  for (const d of snap.docs) {
-    if (d.id === wantSpecId) return d.id;
-  }
-  throw new Error(`Cannot resolve variantId for ${brand} ${model} (${specification})`);
-}
-
-// ---------- TYPES FOR STORE DOC ----------
-export type StoreDoc = {
-  branchName: string;
-  isActive: boolean;
-  phone?: string;
-  email?: string;
-  lineId?: string;
-  address?: {
-    line1?: string;
-    line2?: string;
-    district?: string;
-    province?: string;
-    postalCode?: string;
-    country?: string; // default TH
-  };
-  location?: { lat?: number; lng?: number };
-  services?: string[];
-  hours?: Record<string, { open: string; close: string; closed: boolean }>;
-  createdAt?: any;
-  updatedAt?: any;
+// =========================
+// Types (ให้เพียงพอต่อการใช้งานหน้า UI)
+// =========================
+export type Dot = {
+  dotCode: string;
+  qty: number;
+  basePrice: number;
+  promoPrice?: number | null;
 };
 
-// ---------- SERVICES ----------
-export class StoreService {
-  static async getAllStores(): Promise<Record<string, string>> {
-    const storesCollection = await getDocs(collection(db, 'stores'));
-    const storeMap: Record<string, string> = {};
-    storesCollection.docs.forEach((d) => {
-      const data = d.data() as any;
-      storeMap[d.id] = data.branchName || d.id;
-    });
-    return storeMap;
-  }
+export type SizeVariant = {
+  variantId: string;
+  specification: string;
+  dots: Dot[];
+};
 
-  // NEW: check if storeId is available
-  static async isStoreIdAvailable(storeId: string): Promise<boolean> {
-    const snap = await getDoc(doc(db, 'stores', storeId));
-    return !snap.exists();
-  }
+export type BranchInventory = {
+  branchId: string;
+  branchName: string;
+  sizes: SizeVariant[];
+};
 
-  // NEW: create store document
-  static async createStore(storeId: string, payload: StoreDoc): Promise<void> {
-    const storeRef = doc(db, 'stores', storeId);
-    const now = serverTimestamp();
-    await runTransaction(db, async (trx) => {
-      const exists = await trx.get(storeRef);
-      if (exists.exists()) throw new Error(`Store ID '${storeId}' already exists`);
-      trx.set(storeRef, {
-        ...payload,
-        branchName: payload.branchName?.trim(),
-        isActive: Boolean(payload.isActive),
-        createdAt: now,
-        updatedAt: now,
-      });
-    });
-  }
+export type GroupedProduct = {
+  id: string;            // productId
+  name: string;          // product name
+  brand: string;
+  model?: string;
+  branches: BranchInventory[];
+};
 
-  // NEW: update store
-  static async updateStore(storeId: string, partial: Partial<StoreDoc>): Promise<void> {
-    const storeRef = doc(db, 'stores', storeId);
-    await runTransaction(db, async (trx) => {
-      const snap = await trx.get(storeRef);
-      if (!snap.exists()) throw new Error('Store not found');
-      trx.set(storeRef, { ...partial, updatedAt: serverTimestamp() }, { merge: true });
-    });
-  }
+export type StockMovementType = 'adjust' | 'in' | 'out' | 'transfer_in' | 'transfer_out';
+
+export type StockMovement = {
+  branchId: string;
+  brand: string;
+  model: string;
+  variantId: string;
+  dotCode: string;
+  qtyChange: number; // +in, -out
+  type: StockMovementType;
+  reason?: string;
+  createdAt: Timestamp;
+};
+
+export type OrderItem = {
+  productId: string;
+  productName: string;
+  specification: string;
+  dotCode: string;
+  quantity: number;
+  unitPrice: number;
+  totalPrice: number;
+  variantId: string;
+};
+
+export type OrderStatus = 'requested' | 'confirmed' | 'delivered' | 'cancelled';
+
+export type Order = {
+  id?: string;
+  orderNumber?: string;
+  buyerBranchId: string;
+  buyerBranchName: string;
+  sellerBranchId: string;
+  sellerBranchName: string;
+  status: OrderStatus;
+  totalAmount: number;
+  notes?: string;
+  items: OrderItem[];
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+};
+
+// =========================
+// Firestore collections (แก้ชื่อให้ตรงโปรเจกต์ของคุณถ้าจำเป็น)
+// โครงสร้างสมมติ:
+// products/{productId} => { name, brand, model }
+// products/{productId}/branchInventory/{branchId} => { branchName, sizes: SizeVariant[] }
+//
+// orders/{orderId} => Order
+// stores/{storeId} => { branchName, ... }
+//
+// stockMovements/{autoId} => StockMovement (optional logging)
+// หรือเก็บใต้ stores/{branchId}/movements/{autoId} ก็ได้ (ตัวอย่างนี้ใช้คอลเลกชันรวม)
+// =========================
+const COLLECTIONS = {
+  products: 'products',
+  orders: 'orders',
+  stores: 'stores',
+  stockMovements: 'stockMovements',
+};
+
+// =========================
+// Helper functions
+// =========================
+function slugifyId(s: string) {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)+/g, '')
+    .slice(0, 120);
 }
 
-export class InventoryService {
-  static async fetchInventory(): Promise<GroupedProduct[]> {
-    try {
-      const storeMap = await StoreService.getAllStores();
-      const targetStoreIds = Object.keys(storeMap);
-      const productGroups = new Map<string, GroupedProduct>();
+// หา productId จาก brand+model ถ้าไม่ unique ให้ปรับ logic นี้ให้ตรงกับข้อมูลจริง
+async function findProductIdByBrandModel(brand: string, model?: string): Promise<string | null> {
+  const q = query(
+    collection(db, COLLECTIONS.products),
+    where('brand', '==', brand),
+    where('model', '==', model ?? '')
+  );
+  const snap = await getDocs(q);
+  if (snap.empty) return null;
+  return snap.docs[0].id;
+}
 
-      for (const storeId of targetStoreIds) {
-        const branchName = storeMap[storeId] || storeId;
-        const inventoryData = await this.fetchStoreInventory(storeId, branchName);
+function ensureArray<T>(v: T | T[] | undefined | null): T[] {
+  if (!v) return [];
+  return Array.isArray(v) ? v : [v];
+}
 
-        inventoryData.forEach((product) => {
-          const existing = productGroups.get(product.id);
-          if (existing) {
-            existing.branches.push(...product.branches);
-            existing.totalAvailable += product.totalAvailable;
-          } else {
-            productGroups.set(product.id, product);
-          }
+// =========================
+// Store Service
+// =========================
+export const StoreService = {
+  async getAllStores(): Promise<Record<string, string>> {
+    const snap = await getDocs(collection(db, COLLECTIONS.stores));
+    const out: Record<string, string> = {};
+    snap.forEach((d) => {
+      const data = d.data() as any;
+      out[d.id] = data.branchName ?? d.id;
+    });
+    return out;
+  },
+
+  async isStoreIdAvailable(storeId: string): Promise<boolean> {
+    const ref = doc(db, COLLECTIONS.stores, storeId);
+    const ds = await getDoc(ref);
+    return !ds.exists();
+  },
+
+  async createStore(
+    storeId: string,
+    payload: {
+      branchName: string;
+      isActive?: boolean;
+      address?: Record<string, any>;
+      phone?: string;
+      email?: string;
+      orgId?: string;
+      hours?: Record<string, { open: string; close: string; closed: boolean }>;
+      location?: string;
+      notes?: string;
+    }
+  ): Promise<void> {
+    const ref = doc(db, COLLECTIONS.stores, storeId);
+    await setDoc(ref, {
+      branchName: payload.branchName,
+      isActive: payload.isActive ?? true,
+      address: payload.address ?? {},
+      phone: payload.phone ?? '',
+      email: payload.email ?? '',
+      orgId: payload.orgId ?? '',
+      hours: payload.hours ?? {},
+      location: payload.location ?? '',
+      notes: payload.notes ?? '',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  },
+
+  async updateStore(
+    storeId: string,
+    patch: Partial<{
+      branchName: string;
+      isActive: boolean;
+      address: Record<string, any>;
+      phone: string;
+      email: string;
+      orgId: string;
+      hours: Record<string, { open: string; close: string; closed: boolean }>;
+      location: string;
+      notes: string;
+    }>
+  ): Promise<void> {
+    const ref = doc(db, COLLECTIONS.stores, storeId);
+    await updateDoc(ref, { ...patch, updatedAt: serverTimestamp() });
+  },
+};
+
+// =========================
+// Inventory Service
+// =========================
+export const InventoryService = {
+  // ดึง inventory ของทุก product ทุกสาขา (สำหรับ Transfer Platform)
+  async fetchInventory(): Promise<GroupedProduct[]> {
+    const prodSnap = await getDocs(collection(db, COLLECTIONS.products));
+    const out: GroupedProduct[] = [];
+
+    // ดึง subcollection branchInventory ของแต่ละสินค้า
+    for (const pdoc of prodSnap.docs) {
+      const p = pdoc.data() as any;
+      const branches: BranchInventory[] = [];
+      const bSnap = await getDocs(collection(db, COLLECTIONS.products, pdoc.id, 'branchInventory'));
+      bSnap.forEach((bdoc) => {
+        const bdata = bdoc.data() as any;
+        branches.push({
+          branchId: bdoc.id,
+          branchName: bdata.branchName ?? bdoc.id,
+          sizes: ensureArray<SizeVariant>(bdata.sizes ?? []),
         });
-      }
-      return Array.from(productGroups.values());
-    } catch (error) {
-      console.error('Error fetching all inventory:', error);
-      return [];
-    }
-  }
-
-  static async fetchStoreInventory(storeId: string, branchName: string): Promise<GroupedProduct[]> {
-    const products: GroupedProduct[] = [];
-    const brandsRef = collection(db, 'stores', storeId, 'inventory');
-    const brandSnapshots = await getDocs(brandsRef);
-
-    for (const brandDoc of brandSnapshots.docs) {
-      const modelsRef = collection(brandDoc.ref, 'models');
-      const modelSnapshots = await getDocs(modelsRef);
-
-      for (const modelDoc of modelSnapshots.docs) {
-        const modelData = modelDoc.data() as any;
-        const brandData = brandDoc.data() as any;
-        const productId = `${brandData.brandName} ${modelData.modelName}`;
-
-        const product: GroupedProduct = {
-          id: productId,
-          name: productId,
-          brand: brandData.brandName,
-          model: modelData.modelName,
-          totalAvailable: 0,
-          branches: [{ branchName, branchId: storeId, sizes: [] }],
-        };
-
-        const variantsRef = collection(modelDoc.ref, 'variants');
-        const variantSnapshots = await getDocs(variantsRef);
-
-        for (const variantDoc of variantSnapshots.docs) {
-          const variantData = variantDoc.data() as any;
-          const specification = `${variantData.size} ${variantData.loadIndex || ''}`.trim();
-          const sizeDetail: SizeDetail = { variantId: variantDoc.id, specification, dots: [] };
-          let sizeTotalQty = 0;
-
-          const dotsRef = collection(variantDoc.ref, 'dots');
-          const dotSnapshots = await getDocs(dotsRef);
-
-          dotSnapshots.forEach((dotDoc) => {
-            const dotData = dotDoc.data() as any;
-            if ((dotData.qty ?? 0) > 0) {
-              const dot: DotDetail = {
-                dotCode: dotDoc.id,
-                qty: dotData.qty || 0,
-                basePrice: variantData.basePrice || 0,
-                promoPrice: dotData.promoPrice,
-              };
-              sizeDetail.dots.push(dot);
-              sizeTotalQty += dot.qty;
-            }
-          });
-
-          if (sizeDetail.dots.length > 0) {
-            product.branches[0].sizes.push(sizeDetail);
-            product.totalAvailable += sizeTotalQty;
-          }
-        }
-        if (product.totalAvailable > 0) products.push(product);
-      }
-    }
-    return products;
-  }
-
-  static async createStockMovement(
-    storeId: string,
-    productInfo: { brand: string; model: string; variantId: string; dotCode: string },
-    type: StockMovement['type'],
-    qtyChange: number,
-    details: { price?: number; reason?: string } = {}
-  ) {
-    const { brand, model, variantId, dotCode } = productInfo;
-    const brandId = toId(brand);
-    const modelId = toId(model);
-    const dotRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      brandId,
-      'models',
-      modelId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
-    const movementsRef = collection(db, 'stores', storeId, 'stock_movements');
-
-    try {
-      await runTransaction(db, async (transaction) => {
-        const dotSnap = await transaction.get(dotRef);
-        if (!dotSnap.exists()) throw new Error(`DOT not found at: ${dotRef.path}`);
-        const currentQty = dotSnap.data().qty ?? 0;
-        const newQty = currentQty + qtyChange;
-        if (newQty < 0) {
-          throw new Error(
-            `Insufficient stock for ${dotCode}. Available: ${currentQty}, Required: ${Math.abs(qtyChange)}`
-          );
-        }
-        transaction.set(dotRef, { qty: newQty, updatedAt: serverTimestamp() }, { merge: true });
-
-        const movementLog: Partial<StockMovement> = {
-          productId: `${brand} ${model}`,
-          variantId,
-          dotCode,
-          type,
-          qtyChange,
-          newQty,
-          createdAt: serverTimestamp(),
-        };
-        if (details.price !== undefined) movementLog.price = details.price;
-        if (details.reason) movementLog.reason = details.reason;
-
-        const newMovementRef = doc(movementsRef);
-        transaction.set(newMovementRef, movementLog);
       });
-    } catch (error) {
-      console.error('Transaction failed: ', error);
-      throw error;
+      out.push({
+        id: pdoc.id,
+        name: p.name ?? `${p.brand ?? ''} ${p.model ?? ''}`.trim(),
+        brand: p.brand ?? '',
+        model: p.model ?? '',
+        branches,
+      });
     }
-  }
+    return out;
+  },
 
-  static async getStockMovements(storeId: string, { productId }: { productId: string }): Promise<StockMovement[]> {
-    const movementsRef = collection(db, 'stores', storeId, 'stock_movements');
-    const q = query(movementsRef, where('productId', '==', productId), orderBy('createdAt', 'desc'));
-    const snapshot = await getDocs(q);
-    return snapshot.docs.map((d) => ({ id: d.id, ...d.data() } as StockMovement));
-  }
-  static async upsertDot(
-    storeId: string,
-    args: {
+  // ดึง inventory เฉพาะสาขาหนึ่ง (สำหรับ MyInventory)
+  async fetchStoreInventory(branchId: string, branchName?: string): Promise<GroupedProduct[]> {
+    const prodSnap = await getDocs(collection(db, COLLECTIONS.products));
+    const out: GroupedProduct[] = [];
+
+    for (const pdoc of prodSnap.docs) {
+      const p = pdoc.data() as any;
+      const bRef = doc(db, COLLECTIONS.products, pdoc.id, 'branchInventory', branchId);
+      const bDoc = await getDoc(bRef);
+      if (!bDoc.exists()) continue;
+
+      const bdata = bDoc.data() as any;
+      const sizes = ensureArray<SizeVariant>(bdata.sizes ?? []);
+      out.push({
+        id: pdoc.id,
+        name: p.name ?? `${p.brand ?? ''} ${p.model ?? ''}`.trim(),
+        brand: p.brand ?? '',
+        model: p.model ?? '',
+        branches: [
+          {
+            branchId,
+            branchName: branchName ?? bdata.branchName ?? branchId,
+            sizes,
+          },
+        ],
+      });
+    }
+    return out;
+  },
+
+  // สร้าง/ปรับปรุง DOT (ใช้ใน Add DOT dialog)
+  async upsertDot(
+    branchId: string,
+    payload: {
       brand: string;
-      model: string;
+      model?: string;
       variantId: string;
       dotCode: string;
       qty: number;
-      basePrice?: number;     // ถ้าส่งมาจะอัปเดต basePrice ของ variant ด้วย
-      promoPrice?: number | null; // โปรโมชัน (null = เคลียร์ทิ้ง)
-      mergeQty?: 'increment' | 'set';
+      promoPrice?: number;
     }
   ): Promise<void> {
-    const { brand, model, variantId, dotCode, qty, basePrice, promoPrice, mergeQty = 'set' } = args;
-    const brandId = toId(brand);
-    const modelId = toId(model);
+    // หา product
+    const productId =
+      (await findProductIdByBrandModel(payload.brand, payload.model)) ??
+      // ถ้าไม่พบ ให้สร้าง product ใหม่ (เลือกได้ตาม requirement)
+      (await InventoryService._ensureProduct(payload.brand, payload.model ?? ''));
 
-    const variantRef = doc(db, 'stores', storeId, 'inventory', brandId, 'models', modelId, 'variants', variantId);
-    const dotRef     = doc(variantRef, 'dots', dotCode);
+    const invRef = doc(db, COLLECTIONS.products, productId, 'branchInventory', branchId);
+    const invDs = await getDoc(invRef);
 
-    await runTransaction(db, async (trx) => {
-      // อัปเดตฐานราคา (ถ้าส่งมา)
-      if (typeof basePrice === 'number') {
-        trx.set(variantRef, { basePrice, updatedAt: serverTimestamp() }, { merge: true });
-      }
+    let branchName = branchId;
+    const storeDs = await getDoc(doc(db, COLLECTIONS.stores, branchId));
+    if (storeDs.exists()) {
+      const s = storeDs.data() as any;
+      branchName = s.branchName ?? branchId;
+    }
 
-      const snap = await trx.get(dotRef);
-      const currQty = snap.exists() ? Number((snap.data() as any)?.qty ?? 0) : 0;
-      const newQty  = mergeQty === 'increment' ? currQty + qty : qty;
+    const sizes: SizeVariant[] = invDs.exists() ? ensureArray<SizeVariant>((invDs.data() as any).sizes) : [];
 
-      const dotData: any = { qty: newQty, updatedAt: serverTimestamp() };
-      if (promoPrice === null) {
-        // เคลียร์โปร
-        dotData.promoPrice = deleteField();
-      } else if (typeof promoPrice === 'number') {
-        dotData.promoPrice = promoPrice;
-      }
-
-      trx.set(dotRef, dotData, { merge: true });
-    });
-  }
-
-  /**
-   * ตั้ง/ลบราคาโปรโมชันของ DOT
-   * - ส่ง promoPrice เป็น number เพื่อ "ตั้งค่า"
-   * - ส่ง promoPrice เป็น null เพื่อ "ลบ/เคลียร์"
-   */
-  static async setPromoPrice(
-    storeId: string,
-    args: { brand: string; model: string; variantId: string; dotCode: string; promoPrice: number | null }
-  ): Promise<void> {
-    const { brand, model, variantId, dotCode, promoPrice } = args;
-    const brandId = toId(brand);
-    const modelId = toId(model);
-
-    const dotRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      brandId,
-      'models',
-      modelId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
-
-    if (promoPrice === null) {
-      await runTransaction(db, async (trx) => {
-        trx.set(dotRef, { promoPrice: deleteField(), updatedAt: serverTimestamp() }, { merge: true });
+    // หา variant
+    const idx = sizes.findIndex((s) => String(s.variantId) === String(payload.variantId));
+    if (idx === -1) {
+      sizes.push({
+        variantId: String(payload.variantId),
+        specification: '', // ให้ UI ตั้งได้; หรือไปอ่านจาก products/variants ถ้ามี
+        dots: [
+          {
+            dotCode: payload.dotCode,
+            qty: payload.qty,
+            basePrice: 0,
+            promoPrice: payload.promoPrice ?? undefined,
+          },
+        ],
       });
     } else {
-      await runTransaction(db, async (trx) => {
-        trx.set(dotRef, { promoPrice, updatedAt: serverTimestamp() }, { merge: true });
+      const dots = sizes[idx].dots ?? [];
+      const didx = dots.findIndex((d) => d.dotCode === payload.dotCode);
+      if (didx === -1) {
+        dots.push({
+          dotCode: payload.dotCode,
+          qty: payload.qty,
+          basePrice: 0,
+          promoPrice: payload.promoPrice ?? undefined,
+        });
+      } else {
+        dots[didx].qty = payload.qty;
+        if (payload.promoPrice !== undefined) {
+          dots[didx].promoPrice = payload.promoPrice;
+        }
+      }
+      sizes[idx].dots = dots;
+    }
+
+    await setDoc(invRef, { branchName, sizes }, { merge: true });
+  },
+
+  // ตั้ง/ลบราคาโปร
+  async setPromoPrice(
+    branchId: string,
+    payload: { brand: string; model?: string; variantId: string; dotCode: string; promoPrice: number | null }
+  ): Promise<void> {
+    const productId = await findProductIdByBrandModel(payload.brand, payload.model);
+    if (!productId) throw new Error('Product not found');
+
+    const invRef = doc(db, COLLECTIONS.products, productId, 'branchInventory', branchId);
+    const invDs = await getDoc(invRef);
+    if (!invDs.exists()) throw new Error('Branch inventory not found');
+
+    const data = invDs.data() as any;
+    const sizes: SizeVariant[] = ensureArray<SizeVariant>(data.sizes ?? []);
+    const sidx = sizes.findIndex((s) => String(s.variantId) === String(payload.variantId));
+    if (sidx === -1) throw new Error('Variant not found');
+
+    const dots = sizes[sidx].dots ?? [];
+    const didx = dots.findIndex((d) => d.dotCode === payload.dotCode);
+    if (didx === -1) throw new Error('DOT not found');
+
+    dots[didx].promoPrice = payload.promoPrice ?? undefined;
+    sizes[sidx].dots = dots;
+
+    await updateDoc(invRef, { sizes });
+  },
+
+  // ลบ DOT
+  async deleteDot(
+    branchId: string,
+    payload: { brand: string; model?: string; variantId: string; dotCode: string }
+  ): Promise<void> {
+    const productId = await findProductIdByBrandModel(payload.brand, payload.model);
+    if (!productId) throw new Error('Product not found');
+
+    const invRef = doc(db, COLLECTIONS.products, productId, 'branchInventory', branchId);
+    const invDs = await getDoc(invRef);
+    if (!invDs.exists()) throw new Error('Branch inventory not found');
+
+    const data = invDs.data() as any;
+    const sizes: SizeVariant[] = ensureArray<SizeVariant>(data.sizes ?? []);
+    const sidx = sizes.findIndex((s) => String(s.variantId) === String(payload.variantId));
+    if (sidx === -1) throw new Error('Variant not found');
+
+    sizes[sidx].dots = (sizes[sidx].dots ?? []).filter((d) => d.dotCode !== payload.dotCode);
+    await updateDoc(invRef, { sizes });
+  },
+
+  // บันทึก movement และปรับ qty (ใช้ในปุ่ม + / -)
+  async createStockMovement(
+    branchId: string,
+    target: { brand: string; model?: string; variantId: string; dotCode: string },
+    type: StockMovementType,
+    qtyChange: number,
+    meta?: { reason?: string }
+  ): Promise<void> {
+    const productId = await findProductIdByBrandModel(target.brand, target.model);
+    if (!productId) throw new Error('Product not found');
+
+    const invRef = doc(db, COLLECTIONS.products, productId, 'branchInventory', branchId);
+    const invDs = await getDoc(invRef);
+    if (!invDs.exists()) throw new Error('Branch inventory not found');
+
+    const data = invDs.data() as any;
+    const sizes: SizeVariant[] = ensureArray<SizeVariant>(data.sizes ?? []);
+    const sidx = sizes.findIndex((s) => String(s.variantId) === String(target.variantId));
+    if (sidx === -1) throw new Error('Variant not found');
+
+    const dots = sizes[sidx].dots ?? [];
+    const didx = dots.findIndex((d) => d.dotCode === target.dotCode);
+    if (didx === -1) throw new Error('DOT not found');
+
+    const newQty = Math.max(0, Number(dots[didx].qty ?? 0) + Number(qtyChange));
+    dots[didx].qty = newQty;
+    sizes[sidx].dots = dots;
+
+    const batch = writeBatch(db);
+    batch.update(invRef, { sizes });
+
+    const mvRef = doc(collection(db, COLLECTIONS.stockMovements));
+    const movement: StockMovement = {
+      branchId,
+      brand: target.brand,
+      model: target.model ?? '',
+      variantId: target.variantId,
+      dotCode: target.dotCode,
+      qtyChange,
+      type,
+      reason: meta?.reason,
+      createdAt: serverTimestamp() as any,
+    };
+    batch.set(mvRef, movement);
+
+    await batch.commit();
+  },
+
+  // ถ้าไม่พบ product ให้สร้าง (ใช้งานภายใน)
+  async _ensureProduct(brand: string, model: string): Promise<string> {
+    const name = `${brand} ${model}`.trim();
+    const newId = slugifyId(`${brand}-${model}`) || crypto.randomUUID();
+    const ref = doc(db, COLLECTIONS.products, newId);
+    const ds = await getDoc(ref);
+    if (!ds.exists()) {
+      await setDoc(ref, {
+        name,
+        brand,
+        model,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
       });
     }
-  }
+    return newId;
+  },
+};
 
-  /**
-   * ลบ DOT ทั้งเอกสาร (เช่น เลิกใช้ DOT นั้นแล้ว)
-   */
-  static async deleteDot(
-    storeId: string,
-    args: { brand: string; model: string; variantId: string; dotCode: string }
-  ): Promise<void> {
-    const { brand, model, variantId, dotCode } = args;
-    const brandId = toId(brand);
-    const modelId = toId(model);
-
-    const dotRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      brandId,
-      'models',
-      modelId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
-    await deleteDoc(dotRef);
-  }
-}
-
-export class OrderService {
-  static async createOrder(order: Omit<Order, 'id' | 'orderNumber' | 'createdAt'>): Promise<string> {
-    const { notes, ...rest } = order;
-    const orderNumber = `TRF-${new Date().getFullYear()}-${Date.now()}`;
-    const payload: any = {
-      ...rest,
-      orderNumber,
-      status: order.status || 'pending',
+// =========================
+// Order Service
+// =========================
+export const OrderService = {
+  async createOrder(order: Omit<Order, 'id' | 'createdAt' | 'updatedAt' | 'orderNumber'>): Promise<string> {
+    const ref = await addDoc(collection(db, COLLECTIONS.orders), {
+      ...order,
+      orderNumber: `TR-${Date.now().toString().slice(-6)}`,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    };
-    if (typeof notes === 'string' && notes.trim() !== '') payload.notes = notes.trim();
-    const ref = await addDoc(collection(db, 'orders'), payload);
+    });
     return ref.id;
-  }
+  },
 
-  static async getOrdersByBranch(branchId: string, type: 'buyer' | 'seller'): Promise<Order[]> {
-    const field = type === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
-    const qy = query(collection(db, 'orders'), where(field, '==', branchId));
-    const snapshot = await getDocs(qy);
-    return snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as Order));
-  }
+  // role = 'buyer' | 'seller'
+  async getOrdersByBranch(branchId: string, role: 'buyer' | 'seller'): Promise<Order[]> {
+    const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
+    const qy = query(collection(db, COLLECTIONS.orders), where(field, '==', branchId));
+    const snap = await getDocs(qy);
+    return snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Order[];
+  },
 
-  static async approveTransfer(orderId: string): Promise<void> {
-    const oRef = doc(db, 'orders', orderId);
-    const snap = await getDoc(oRef);
-    if (!snap.exists()) throw new Error('Order not found');
-
-    const order = snap.data() as Order;
-    const batch = writeBatch(db);
-
-    for (const item of order.items) {
-      const [brand, ...m] = item.productName.split(' ');
-      const model = m.join(' ');
-      const variantId =
-        item.variantId ||
-        (await resolveVariantId({
-          sellerBranchId: order.sellerBranchId,
-          brand,
-          model,
-          specification: item.specification,
-        }));
-
-      const dotRef = doc(
-        db,
-        'stores',
-        order.sellerBranchId,
-        'inventory',
-        toId(brand),
-        'models',
-        toId(model),
-        'variants',
-        variantId,
-        'dots',
-        item.dotCode
-      );
-      const dotSnap = await getDoc(dotRef);
-      const currentQty = (dotSnap.data() as any)?.qty ?? 0;
-      if (currentQty < item.quantity) throw new Error(`Insufficient stock for ${item.productName}`);
-      batch.update(dotRef, { qty: currentQty - item.quantity, lastUpdated: serverTimestamp() });
-    }
-
-    batch.update(oRef, { status: 'confirmed', updatedAt: serverTimestamp() });
-    await batch.commit();
-  }
-}
+  async approveTransfer(orderId: string): Promise<void> {
+    const ref = doc(db, COLLECTIONS.orders, orderId);
+    await updateDoc(ref, { status: 'confirmed', updatedAt: serverTimestamp() });
+  },
+};

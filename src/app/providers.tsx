@@ -1,29 +1,30 @@
-import './globals.css';
-import type { Metadata } from 'next';
-import Providers from './providers';
-import AppSidebar from '@/src/app/components/AppSidebar';
+'use client';
 
-export const metadata: Metadata = {
-  title: 'App',
-  description: '...',
-};
+import { useState } from 'react';
+import { ThemeProvider } from '@/components/theme-provider';
+import { SidebarProvider } from '@/components/ui/sidebar';
+import { BranchProvider } from '@/contexts/BranchContext';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Toaster } from 'sonner';
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default function Providers({ children }: { children: React.ReactNode }) {
+  // ใส่ useState เพื่อสร้าง QueryClient เพียงครั้งเดียวในฝั่ง client
+  const [qc] = useState(() => new QueryClient());
+
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen bg-background text-foreground antialiased">
-        {/* ทุกอย่างต้องอยู่ใต้ <Providers> เพื่อให้มี BranchProvider ครอบ AppSidebar ด้วย */}
-        <Providers>
-          <div className="flex min-h-screen">
-            <AppSidebar /> {/* <-- ใช้ useBranch ได้ เพราะอยู่ใต้ BranchProvider แล้ว */}
-            <main className="flex-1">
-              <div className="container mx-auto max-w-7xl px-4 py-6 sm:px-6 lg:px-8">
-                {children}
-              </div>
-            </main>
-          </div>
-        </Providers>
-      </body>
-    </html>
+    <ThemeProvider attribute="class" defaultTheme="system" enableSystem disableTransitionOnChange>
+      <QueryClientProvider client={qc}>
+        {/* BranchProvider ต้องครอบ AppSidebar และเพจทุกหน้า */}
+        <BranchProvider>
+          {/* SidebarProvider ครอบเพื่อให้ AppSidebar ใช้งาน context ได้ */}
+          <SidebarProvider>
+            {children}
+          </SidebarProvider>
+
+          {/* toaster ใช้แจ้งเตือนทั่วแอป */}
+          <Toaster richColors />
+        </BranchProvider>
+      </QueryClientProvider>
+    </ThemeProvider>
   );
 }

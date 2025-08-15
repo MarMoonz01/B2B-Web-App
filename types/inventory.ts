@@ -1,72 +1,68 @@
-// types/inventory.ts
+// src/types/inventory.ts
 
-export interface DotDetail {
-  dotCode: string;
-  qty: number;
-  basePrice: number;
-  promoPrice?: number;
-}
+// ----- Inventory (normalized) -----
+export type DotNode = {
+  dotCode: string;          // e.g. "DOT 2323"
+  qty: number;              // available units
+  basePrice?: number;       // regular price
+  promoPrice?: number;      // promotional price (if any)
+};
 
-export interface SizeDetail {
-  variantId: string;
-  specification: string;
-  dots: DotDetail[];
-}
+export type SizeNode = {
+  specification: string;    // e.g. "205/55R16"
+  variantId: string;        // SKU/variant key
+  dots: DotNode[];
+};
 
-export interface BranchDetail {
+export type BranchStock = {
   branchId: string;
   branchName: string;
-  sizes: SizeDetail[];
-}
+  sizes: SizeNode[];
+};
 
-// ✅ พิมพ์เขียวหลักที่ทุกไฟล์จะใช้
-export interface GroupedProduct {
-  id: string; // e.g., "MICHELIN PRIMACY-4"
-  name: string; // e.g., "Michelin Primacy 4"
-  brand: string; // e.g., "Michelin"
-  model: string; // e.g., "Primacy 4"
-  totalAvailable: number;
-  branches: BranchDetail[];
-}
+export type GroupedProduct = {
+  id: string;               // product id
+  name: string;             // product display name
+  brand: string;
+  model?: string;
+  branches: BranchStock[];
+};
 
-// Type สำหรับ Log การเคลื่อนไหวของสต็อก
-export interface StockMovement {
-  id?: string;
-  productId: string;
-  variantId: string;
-  dotCode: string;
-  type: 'sell' | 'receive' | 'adjust' | 'transfer-out' | 'transfer-in';
-  qtyChange: number;
-  newQty: number;
-  price?: number;
-  reason?: string;
-  relatedTransferId?: string;
-  createdAt: any; // Firestore Timestamp
-}
-
-// Type สำหรับ Order (Transfer)
-export interface OrderItem {
+// ----- Transfer Request / Order -----
+export type OrderItem = {
   productId: string;
   productName: string;
-  specification: string;
+  specification: string;    // size spec
   dotCode: string;
+  variantId: string;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
-  variantId?: string;
-}
+};
 
-export interface Order {
-  id?: string;
-  orderNumber: string;
+export type OrderStatus =
+  | 'requested'
+  | 'confirmed'
+  | 'rejected'
+  | 'cancelled'
+  | 'completed';
+
+export type Order = {
+  id: string;
+  orderNumber?: string;
+
   buyerBranchId: string;
-  buyerBranchName: string;
+  buyerBranchName?: string;
+
   sellerBranchId: string;
-  sellerBranchName: string;
+  sellerBranchName?: string;
+
   items: OrderItem[];
   totalAmount: number;
-  status: 'pending' | 'requested' | 'confirmed' | 'processing' | 'shipped' | 'delivered' | 'cancelled' | 'paid';
-  createdAt: any;
-  updatedAt?: any;
+  status: OrderStatus;
   notes?: string;
-}
+
+  // Firestore timestamps or plain Date if mapped
+  createdAt?: { seconds: number; nanoseconds: number } | Date;
+  updatedAt?: { seconds: number; nanoseconds: number } | Date;
+};

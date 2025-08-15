@@ -1,6 +1,6 @@
 // src/app/branches/new/page.tsx
 import type { Metadata } from "next";
-import BranchNewView from "@/src/app/components/ฺBranchNewView";
+import BranchNewView from "@/src/app/components/BranchNewView";
 
 export const metadata: Metadata = {
   title: "Add New Branch",
