@@ -1,463 +1,635 @@
 'use client';
 
-import * as React from 'react';
 import { useEffect, useMemo, useState } from 'react';
-import { z } from 'zod';
-import { useForm, type SubmitHandler } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
+import { useRouter } from 'next/navigation';
+import {
+  slugifyId,
+  StoreService,
+  InventoryTestUtils,
+  type StoreDoc,
+} from '@/lib/services/InventoryService';
+
 import { toast } from 'sonner';
 import {
   Building2,
+  CheckCircle2,
+  CircleSlash,
+  Loader2,
   MapPin,
-  Phone,
-  Mail,
-  ShieldCheck,
-  Check,
-  AlertCircle,
+  XCircle,
+  ExternalLink,
+  TestTube2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select';
 import { Switch } from '@/components/ui/switch';
-import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 
-import { StoreService, type StoreDoc } from '@/lib/services/InventoryService';
+/* ---------- helpers ---------- */
+type Avail = 'idle' | 'checking' | 'ok' | 'taken';
 
-// ---------- helpers ----------
-const toId = (s: string) =>
-  String(s || '')
-    .trim()
-    .toUpperCase()
-    .replace(/[\/\s]+/g, '-');
-
-const TH_PROVINCES = [
-  'Bangkok', 'Nonthaburi', 'Pathum Thani', 'Samut Prakan', 'Samut Sakhon',
-  'Samut Songkhram', 'Nakhon Pathom', 'Chonburi', 'Rayong', 'Phuket', 'Chiang Mai',
-  'Chiang Rai', 'Ayutthaya', 'Nakhon Ratchasima',
-];
-
-const dayKeys = ['mon','tue','wed','thu','fri','sat','sun'] as const;
-type DayKey = typeof dayKeys[number];
-type DayHours = { open: string; close: string; closed: boolean };
-type Hours = Record<DayKey, DayHours>;
-
-const DayHoursSchema = z.object({
-  open: z.string(),
-  close: z.string(),
-  closed: z.boolean(),
-});
-const HoursSchema = z.object({
-  mon: DayHoursSchema, tue: DayHoursSchema, wed: DayHoursSchema,
-  thu: DayHoursSchema, fri: DayHoursSchema, sat: DayHoursSchema, sun: DayHoursSchema,
-});
-
-const defaultHours: Hours = {
-  mon: { open: '09:00', close: '18:00', closed: false },
-  tue: { open: '09:00', close: '18:00', closed: false },
-  wed: { open: '09:00', close: '18:00', closed: false },
-  thu: { open: '09:00', close: '18:00', closed: false },
-  fri: { open: '09:00', close: '18:00', closed: false },
-  sat: { open: '09:00', close: '17:00', closed: false },
-  sun: { open: '09:00', close: '17:00', closed: true },
-};
-
-// ---------- schema ----------
-const schema = z.object({
-  branchName: z.string().min(2, 'Branch name is required'),
-  branchId: z.string().min(2, 'Branch ID is required').regex(/^[A-Z0-9\-_.]+$/, 'Only A-Z, 0-9, - _ .'),
-  isActive: z.boolean().default(true),
-  phone: z.string().optional(),
-  email: z.string().email().optional().or(z.literal('')),
-  lineId: z.string().optional(),
-  address: z.object({
-    line1: z.string().optional(),
-    line2: z.string().optional(),
-    district: z.string().optional(),
-    province: z.string().optional(),
-    postalCode: z.string().optional(),
-    country: z.string().default('TH').optional(),
-  }),
-  location: z.object({ lat: z.coerce.number().optional(), lng: z.coerce.number().optional() }).optional(),
-  services: z.array(z.string()).optional(),
-  notes: z.string().optional(),
-  hours: HoursSchema,
-});
-type FormValues = z.infer<typeof schema>;
-
-// ---------- component ----------
-export default function BranchNewView({ onCreated }: { onCreated?: (storeId: string) => void }) {
-  const [checking, setChecking] = useState<'idle'|'checking'|'ok'|'exist'>('idle');
-
-  const form = useForm<FormValues>({
-    resolver: zodResolver(schema),
-    defaultValues: {
-      branchName: '',
-      branchId: '',
-      isActive: true,
-      phone: '',
-      email: '',
-      lineId: '',
-      address: { line1: '', line2: '', district: '', province: '', postalCode: '', country: 'TH' },
-      location: { lat: undefined, lng: undefined },
-      services: [],
-      notes: '',
-      hours: defaultHours,
-    },
-    mode: 'onChange',
-  });
-
-  const branchName = form.watch('branchName');
-  const branchId = form.watch('branchId');
-
-  // Auto-generate branchId from name (one-time if empty)
+function useDebounced<T>(value: T, delay = 300) {
+  const [v, setV] = useState(value);
   useEffect(() => {
-    if (!branchId && branchName) {
-      form.setValue('branchId', toId(branchName));
-      setChecking('idle');
-    }
-  }, [branchName]); // eslint-disable-line react-hooks/exhaustive-deps
+    const id = setTimeout(() => setV(value), delay);
+    return () => clearTimeout(id);
+  }, [value, delay]);
+  return v;
+}
 
-  const checkId = async (id: string) => {
-    if (!id) return;
-    setChecking('checking');
-    try {
-      const available = await StoreService.isStoreIdAvailable(id);
-      setChecking(available ? 'ok' : 'exist');
-    } catch {
-      setChecking('idle');
-    }
-  };
+/* ---------- component ---------- */
+export default function BranchNewView() {
+  const router = useRouter();
 
-  const onSubmit: SubmitHandler<FormValues> = async (values) => {
+  // Basic
+  const [branchName, setBranchName] = useState('');
+  const [branchId, setBranchId] = useState('');
+  const [lockId, setLockId] = useState(false);
+  const [isActive, setIsActive] = useState(true);
+
+  // Contact
+  const [phone, setPhone] = useState('');
+  const [email, setEmail] = useState('');
+  const [lineId, setLineId] = useState('');
+
+  // Address
+  const [line1, setLine1] = useState('');
+  const [district, setDistrict] = useState('');
+  const [province, setProvince] = useState('');
+  const [postalCode, setPostalCode] = useState('');
+  const [country, setCountry] = useState('Thailand');
+
+  // Location
+  const [lat, setLat] = useState<string>('');
+  const [lng, setLng] = useState<string>('');
+
+  // Extra
+  const [services, setServices] = useState(''); // comma separated
+  const [notes, setNotes] = useState('');
+
+  // Hours
+  const [hours, setHours] = useState<
+    Record<string, { open: string; close: string; closed: boolean }>
+  >({
+    mon: { open: '08:30', close: '18:00', closed: false },
+    tue: { open: '08:30', close: '18:00', closed: false },
+    wed: { open: '08:30', close: '18:00', closed: false },
+    thu: { open: '08:30', close: '18:00', closed: false },
+    fri: { open: '08:30', close: '18:00', closed: false },
+    sat: { open: '09:00', close: '17:00', closed: false },
+    sun: { open: '00:00', close: '00:00', closed: true },
+  });
+  const days: Array<[keyof typeof hours, string]> = [
+    ['mon', 'Mon'],
+    ['tue', 'Tue'],
+    ['wed', 'Wed'],
+    ['thu', 'Thu'],
+    ['fri', 'Fri'],
+    ['sat', 'Sat'],
+    ['sun', 'Sun'],
+  ];
+
+  // State
+  const [checking, setChecking] = useState<Avail>('idle');
+  const [submitting, setSubmitting] = useState(false);
+  const [testing, setTesting] = useState(false);
+
+  // auto-slug id จากชื่อ (ถ้า user ยังไม่แก้เอง)
+  useEffect(() => {
+    if (!lockId) setBranchId(slugifyId(branchName));
+  }, [branchName, lockId]);
+
+  const debouncedId = useDebounced(branchId.trim(), 300);
+
+  // เช็คซ้ำ Branch ID
+  useEffect(() => {
+    let cancelled = false;
+    async function run() {
+      if (!debouncedId) {
+        setChecking('idle');
+        return;
+      }
+      setChecking('checking');
+      try {
+        const ok = await StoreService.isStoreIdAvailable(debouncedId);
+        if (!cancelled) setChecking(ok ? 'ok' : 'taken');
+      } catch {
+        if (!cancelled) setChecking('idle');
+      }
+    }
+    run();
+    return () => {
+      cancelled = true;
+    };
+  }, [debouncedId]);
+
+  // กันออกจากหน้าโดยยังไม่เซฟ
+  useEffect(() => {
+    const dirty = !!(
+      branchName ||
+      phone ||
+      email ||
+      line1 ||
+      services ||
+      notes ||
+      lat ||
+      lng
+    );
+    const handler = (e: BeforeUnloadEvent) => {
+      if (dirty) {
+        e.preventDefault();
+        e.returnValue = '';
+      }
+    };
+    window.addEventListener('beforeunload', handler);
+    return () => window.removeEventListener('beforeunload', handler);
+  }, [branchName, phone, email, line1, services, notes, lat, lng]);
+
+  const canSubmit = useMemo(() => {
+    if (!branchName.trim()) return false;
+    if (!branchId.trim()) return false;
+    if (checking === 'taken' || checking === 'checking') return false;
+    if (email && !/^\S+@\S+\.\S+$/.test(email)) return false;
+    if (lat && isNaN(Number(lat))) return false;
+    if (lng && isNaN(Number(lng))) return false;
+    return true;
+  }, [branchName, branchId, checking, email, lat, lng]);
+
+  function copyWeekdayToWeekend() {
+    const wd = hours.fri;
+    setHours((h) => ({
+      ...h,
+      sat: { ...wd },
+      sun: { ...wd, closed: true },
+    }));
+  }
+
+  async function useMyLocation() {
+    if (!(navigator as any)?.geolocation) {
+      toast.error('เบราว์เซอร์นี้ไม่รองรับ Geolocation');
+      return;
+    }
+    (navigator as any).geolocation.getCurrentPosition(
+      (pos: any) => {
+        setLat(String(pos.coords.latitude.toFixed(6)));
+        setLng(String(pos.coords.longitude.toFixed(6)));
+      },
+      (err: any) =>
+        toast.error('อ่านพิกัดไม่สำเร็จ', { description: err.message }),
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+
+  function openInGoogleMaps() {
+    if (!lat || !lng) return;
+    const url = `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(
+      `${lat},${lng}`
+    )}`;
+    window.open(url, '_blank', 'noopener,noreferrer');
+  }
+
+  async function testWrite() {
+    if (!branchId.trim()) {
+      toast.error('กรุณากรอก Branch ID ก่อน');
+      return;
+    }
+    setTesting(true);
     try {
-      const storeId = values.branchId.toUpperCase();
-      const payload: StoreDoc = {
-        branchName: values.branchName.trim(),
-        isActive: values.isActive,
-        phone: values.phone?.trim() || undefined,
-        email: values.email?.trim() || undefined,
-        lineId: values.lineId?.trim() || undefined,
-        address: values.address,
-        location: values.location,
-        services: values.services,
-        hours: values.hours,
-      };
-      await StoreService.createStore(storeId, payload);
-      toast.success(`Created branch ${values.branchName}`);
-      onCreated?.(storeId);
-      form.reset({
-        branchName: '',
-        branchId: '',
-        isActive: true,
-        phone: '',
-        email: '',
-        lineId: '',
-        address: { line1: '', line2: '', district: '', province: '', postalCode: '', country: 'TH' },
-        location: { lat: undefined, lng: undefined },
-        services: [],
-        notes: '',
-        hours: defaultHours,
-      });
+      const ok = await InventoryTestUtils.testConnection(branchId.trim());
+      toast[ok ? 'success' : 'error'](
+        ok ? 'Test write OK' : 'Test write failed'
+      );
     } catch (e: any) {
-      toast.error(e?.message ?? 'Failed to create branch');
+      toast.error('Test write failed', { description: e?.message || String(e) });
+    } finally {
+      setTesting(false);
     }
-  };
+  }
 
-  const idStatus = useMemo(() => {
-    if (!branchId) return null;
-    if (checking === 'checking') return <Badge variant="secondary" className="ml-2">Checking…</Badge>;
-    if (checking === 'ok') return <Badge className="ml-2"><Check className="h-3 w-3 mr-1" />Available</Badge>;
-    if (checking === 'exist') return <Badge variant="destructive" className="ml-2"><AlertCircle className="h-3 w-3 mr-1" />Already used</Badge>;
-    return null;
-  }, [checking, branchId]);
+  async function submit(redirectTo?: string) {
+    if (!canSubmit) return;
+    setSubmitting(true);
+    try {
+      const payload: StoreDoc = {
+        branchName: branchName.trim(),
+        isActive,
+        phone: phone.trim() || undefined,
+        email: email.trim() || undefined,
+        lineId: lineId.trim() || undefined,
+        address: {
+          line1: line1.trim() || undefined,
+          district: district.trim() || undefined,
+          province: province.trim() || undefined,
+          postalCode: postalCode.trim() || undefined,
+          country: country.trim() || undefined,
+        },
+        location:
+          lat || lng
+            ? { lat: Number(lat) || undefined, lng: Number(lng) || undefined }
+            : undefined,
+        services: services
+          .split(',')
+          .map((s) => s.trim())
+          .filter(Boolean),
+        notes: notes.trim() || undefined,
+        hours,
+      };
+
+      await StoreService.createStore(branchId, payload);
+      toast.success('สร้างสาขาเรียบร้อย', {
+        description: `${branchName} (${branchId})`,
+      });
+
+      router.push(redirectTo ?? '/branches');
+    } catch (e: any) {
+      console.error(e);
+      toast.error('สร้างสาขาไม่สำเร็จ', {
+        description: e?.message || String(e),
+      });
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  function clearForm() {
+    setBranchName('');
+    setBranchId('');
+    setLockId(false);
+    setIsActive(true);
+    setPhone('');
+    setEmail('');
+    setLineId('');
+    setLine1('');
+    setDistrict('');
+    setProvince('');
+    setPostalCode('');
+    setCountry('Thailand');
+    setLat('');
+    setLng('');
+    setServices('');
+    setNotes('');
+    setChecking('idle');
+    setHours({
+      mon: { open: '08:30', close: '18:00', closed: false },
+      tue: { open: '08:30', close: '18:00', closed: false },
+      wed: { open: '08:30', close: '18:00', closed: false },
+      thu: { open: '08:30', close: '18:00', closed: false },
+      fri: { open: '08:30', close: '18:00', closed: false },
+      sat: { open: '09:00', close: '17:00', closed: false },
+      sun: { open: '00:00', close: '00:00', closed: true },
+    });
+  }
 
   return (
-    <div className="space-y-6">
-      {/* Header */}
-      <div className="flex items-start justify-between gap-4">
+    <div className="mx-auto w-full max-w-3xl">
+      <div className="mb-6 flex items-center gap-3">
+        <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+          <Building2 className="h-5 w-5 text-muted-foreground" />
+        </div>
         <div>
-          <h1 className="text-2xl font-semibold">Add New Branch</h1>
+          <h1 className="text-2xl font-bold leading-tight">Create New Branch</h1>
           <p className="text-sm text-muted-foreground">
-            Create a new branch and store its metadata in Firestore. You can import inventory later.
+            เพิ่มสาขาใหม่ให้กับเครือข่าย
           </p>
         </div>
-        <Button variant="outline" onClick={() => form.reset()}>Reset</Button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* LEFT: form */}
-        <Card className="lg:col-span-2">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Branch Information</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-6">
-            {/* name + id + active */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <Label>Branch Name</Label>
-                <div className="relative mt-1">
-                  <Input placeholder="Tyreplus สาขา Central Rama 2" {...form.register('branchName')} />
-                  <Building2 className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                </div>
-                {form.formState.errors.branchName && (
-                  <p className="text-xs text-destructive mt-1">{form.formState.errors.branchName.message}</p>
+      <Card className="shadow-sm">
+        <CardHeader>
+          <CardTitle className="text-base">Branch Details</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-6">
+          {/* Basic */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <div className="sm:col-span-2">
+              <Label htmlFor="branchName">Branch Name</Label>
+              <Input
+                id="branchName"
+                placeholder="เช่น Bangkok HQ"
+                value={branchName}
+                onChange={(e) => setBranchName(e.target.value)}
+              />
+            </div>
+            <div className="flex items-end gap-2">
+              <div className="flex-1">
+                <Label htmlFor="branchId">Branch ID</Label>
+                <Input
+                  id="branchId"
+                  placeholder="เช่น bangkok-hq"
+                  value={branchId}
+                  onChange={(e) => {
+                    setBranchId(e.target.value);
+                    setLockId(true);
+                  }}
+                />
+              </div>
+              <div className="flex items-center pb-2">
+                {checking === 'checking' && (
+                  <Badge variant="secondary" className="gap-1">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Checking
+                  </Badge>
+                )}
+                {checking === 'ok' && (
+                  <Badge className="gap-1 bg-emerald-600 hover:bg-emerald-600">
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    OK
+                  </Badge>
+                )}
+                {checking === 'taken' && (
+                  <Badge variant="destructive" className="gap-1">
+                    <XCircle className="h-3.5 w-3.5" />
+                    Taken
+                  </Badge>
+                )}
+                {checking === 'idle' && (
+                  <Badge variant="outline" className="gap-1">
+                    <CircleSlash className="h-3.5 w-3.5" />
+                    Idle
+                  </Badge>
                 )}
               </div>
-
-              <div>
-                <Label>Branch ID</Label>
-                <div className="flex items-center gap-2 mt-1">
-                  <Input
-                    placeholder="TYREPLUS-RAMA-2"
-                    {...form.register('branchId')}
-                    onBlur={(e) => checkId(e.target.value.toUpperCase())}
-                  />
-                  {idStatus}
-                </div>
-                <p className="text-[11px] text-muted-foreground mt-1">
-                  Auto-generated from name (A–Z, 0–9, - _ .). Must be unique.
-                </p>
-              </div>
-
-              <div className="flex items-end">
-                <div className="w-full rounded-md border p-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <ShieldCheck className="h-4 w-4" />
-                      <Label className="m-0">Active</Label>
-                    </div>
-                    <Switch
-                      checked={form.watch('isActive')}
-                      onCheckedChange={(v) => form.setValue('isActive', Boolean(v))}
-                    />
-                  </div>
-                </div>
-              </div>
             </div>
+          </div>
 
-            <Separator />
+          <div className="flex items-center gap-2">
+            <Switch
+              id="isActive"
+              checked={isActive}
+              onCheckedChange={(v) => setIsActive(Boolean(v))}
+            />
+            <Label htmlFor="isActive">Active</Label>
+          </div>
 
-            {/* Contact */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              <div>
-                <Label>Phone</Label>
-                <div className="relative mt-1">
-                  <Input placeholder="02-xxx-xxxx" {...form.register('phone')} />
-                  <Phone className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                </div>
-              </div>
-              <div>
-                <Label>Email</Label>
-                <div className="relative mt-1">
-                  <Input placeholder="branch@example.com" {...form.register('email')} />
-                  <Mail className="absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-                </div>
-              </div>
-              <div>
-                <Label>LINE ID</Label>
-                <Input className="mt-1" placeholder="@tyreplus-branch" {...form.register('lineId')} />
-              </div>
-            </div>
+          <Separator />
 
-            <Separator />
-
-            {/* Address */}
-            <div className="space-y-3">
-              <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                <MapPin className="h-4 w-4" />
-                Address
-              </div>
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                <div>
-                  <Label>Address line 1</Label>
-                  <Input className="mt-1" {...form.register('address.line1')} placeholder="123/4 Moo 5, Ratchaphruek Rd." />
-                </div>
-                <div>
-                  <Label>Address line 2</Label>
-                  <Input className="mt-1" {...form.register('address.line2')} placeholder="(optional)" />
-                </div>
-                <div>
-                  <Label>District / Sub-district</Label>
-                  <Input className="mt-1" {...form.register('address.district')} placeholder="Bang Phlat" />
-                </div>
-                <div>
-                  <Label>Province</Label>
-                  <Select
-                    value={form.watch('address.province') || ''}
-                    onValueChange={(v) => form.setValue('address.province', v)}
-                  >
-                    <SelectTrigger className="mt-1">
-                      <SelectValue placeholder="Select province" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {TH_PROVINCES.map((p) => (
-                        <SelectItem key={p} value={p}>{p}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-                <div>
-                  <Label>Postal Code</Label>
-                  <Input className="mt-1" {...form.register('address.postalCode')} />
-                </div>
-                <div>
-                  <Label>Country</Label>
-                  <Input className="mt-1" {...form.register('address.country')} defaultValue="TH" />
-                </div>
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label>Latitude</Label>
-                  <Input className="mt-1" type="number" step="any" {...form.register('location.lat')} />
-                </div>
-                <div>
-                  <Label>Longitude</Label>
-                  <Input className="mt-1" type="number" step="any" {...form.register('location.lng')} />
-                </div>
-              </div>
-            </div>
-
-            <Separator />
-
-            {/* Services */}
+          {/* Contact */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
             <div>
-              <Label>Services Offered</Label>
-              <div className="grid grid-cols-2 md:grid-cols-3 gap-2 mt-2">
-                {['Tyres','Alignment','Wheel Balancing','Oil Change','Battery','Brakes','Suspension','A/C Service'].map((svc) => {
-                  const selected = form.watch('services')?.includes(svc) ?? false;
-                  return (
-                    <button
-                      key={svc}
-                      type="button"
-                      onClick={() => {
-                        const curr = new Set(form.watch('services') || []);
-                        if (curr.has(svc)) curr.delete(svc); else curr.add(svc);
-                        form.setValue('services', Array.from(curr));
-                      }}
-                      className={`text-left rounded-md border px-3 py-2 text-sm transition-colors ${selected ? 'bg-primary/10 border-primary' : 'hover:bg-muted'}`}
-                    >
-                      {svc}
-                    </button>
-                  );
-                })}
+              <Label htmlFor="phone">Phone</Label>
+              <Input
+                id="phone"
+                placeholder="02-xxx-xxxx"
+                value={phone}
+                onChange={(e) => setPhone(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="email">Email</Label>
+              <Input
+                id="email"
+                type="email"
+                placeholder="name@example.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="lineId">Line ID</Label>
+              <Input
+                id="lineId"
+                placeholder="line id"
+                value={lineId}
+                onChange={(e) => setLineId(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Address */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="sm:col-span-2">
+              <Label htmlFor="line1">Address</Label>
+              <Input
+                id="line1"
+                placeholder="บ้านเลขที่/ถนน/อาคาร…"
+                value={line1}
+                onChange={(e) => setLine1(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="district">District</Label>
+              <Input
+                id="district"
+                value={district}
+                onChange={(e) => setDistrict(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="province">Province</Label>
+              <Input
+                id="province"
+                value={province}
+                onChange={(e) => setProvince(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="postal">Postal Code</Label>
+              <Input
+                id="postal"
+                value={postalCode}
+                onChange={(e) => setPostalCode(e.target.value)}
+              />
+            </div>
+            <div>
+              <Label htmlFor="country">Country</Label>
+              <Input
+                id="country"
+                value={country}
+                onChange={(e) => setCountry(e.target.value)}
+              />
+            </div>
+          </div>
+
+          {/* Location */}
+          <div className="space-y-3">
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <div>
+                <Label htmlFor="lat">Latitude</Label>
+                <Input
+                  id="lat"
+                  placeholder="13.7xxxx"
+                  value={lat}
+                  onChange={(e) => setLat(e.target.value)}
+                />
+              </div>
+              <div>
+                <Label htmlFor="lng">Longitude</Label>
+                <Input
+                  id="lng"
+                  placeholder="100.5xxxx"
+                  value={lng}
+                  onChange={(e) => setLng(e.target.value)}
+                />
+              </div>
+              <div className="flex items-end gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={useMyLocation}
+                  className="flex-1"
+                >
+                  <MapPin className="mr-2 h-4 w-4" /> Use my location
+                </Button>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  onClick={openInGoogleMaps}
+                  disabled={!lat || !lng}
+                  title="Open in Google Maps"
+                >
+                  <ExternalLink className="h-4 w-4" />
+                </Button>
               </div>
             </div>
+            {/* ไม่ฝังแผนที่ แต่ออกลิงก์ไป Google Maps ได้ตามต้องการ */}
+          </div>
 
-            <Separator />
-
-            {/* Hours */}
-            <div className="space-y-3">
+          {/* Operating Hours */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
               <Label>Operating Hours</Label>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {dayKeys.map((day) => {
-                  const v = form.watch(`hours.${day}` as const) as DayHours;
-                  const labelMap: Record<DayKey,string> = {mon:'Mon',tue:'Tue',wed:'Wed',thu:'Thu',fri:'Fri',sat:'Sat',sun:'Sun'};
-                  return (
-                    <div key={day} className="rounded-md border p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="text-sm font-medium">{labelMap[day]}</div>
-                        <div className="flex items-center gap-2 text-xs">
-                          <span>Closed</span>
-                          <Switch
-                            checked={v?.closed ?? false}
-                            onCheckedChange={(closed) =>
-                              form.setValue(`hours.${day}.closed` as const, Boolean(closed))
-                            }
-                          />
-                        </div>
-                      </div>
-                      {!v?.closed && (
-                        <div className="mt-2 grid grid-cols-2 gap-2">
-                          <div>
-                            <Label className="text-xs">Open</Label>
-                            <Input
-                              className="mt-1"
-                              placeholder="09:00"
-                              value={v?.open ?? ''}
-                              onChange={(e) => form.setValue(`hours.${day}.open` as const, e.target.value)}
-                            />
-                          </div>
-                          <div>
-                            <Label className="text-xs">Close</Label>
-                            <Input
-                              className="mt-1"
-                              placeholder="18:00"
-                              value={v?.close ?? ''}
-                              onChange={(e) => form.setValue(`hours.${day}.close` as const, e.target.value)}
-                            />
-                          </div>
-                        </div>
-                      )}
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={copyWeekdayToWeekend}
+              >
+                Copy weekdays → weekend
+              </Button>
+            </div>
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {days.map(([key, label]) => (
+                <div
+                  key={key}
+                  className="flex items-center gap-2 rounded-lg border p-3"
+                >
+                  <div className="w-10 shrink-0 text-sm font-medium">
+                    {label}
+                  </div>
+                  <Switch
+                    checked={!hours[key].closed}
+                    onCheckedChange={(v) =>
+                      setHours((h) => ({
+                        ...h,
+                        [key]: { ...h[key], closed: !v },
+                      }))
+                    }
+                  />
+                  {hours[key].closed ? (
+                    <Badge variant="outline" className="ml-2">
+                      Closed
+                    </Badge>
+                  ) : (
+                    <div className="ml-2 flex items-center gap-2">
+                      <Input
+                        className="w-24"
+                        type="time"
+                        value={hours[key].open}
+                        onChange={(e) =>
+                          setHours((h) => ({
+                            ...h,
+                            [key]: { ...h[key], open: e.target.value },
+                          }))
+                        }
+                      />
+                      <span className="text-xs text-muted-foreground">to</span>
+                      <Input
+                        className="w-24"
+                        type="time"
+                        value={hours[key].close}
+                        onChange={(e) =>
+                          setHours((h) => ({
+                            ...h,
+                            [key]: { ...h[key], close: e.target.value },
+                          }))
+                        }
+                      />
                     </div>
-                  );
-                })}
-              </div>
+                  )}
+                </div>
+              ))}
             </div>
+          </div>
 
-            <Separator />
-
-            {/* Notes */}
+          {/* Services / Notes */}
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <div>
-              <Label>Notes (optional)</Label>
-              <Textarea className="mt-1" rows={3} placeholder="Any internal notes for this branch (not public)" {...form.register('notes')} />
+              <Label htmlFor="services">Services (comma separated)</Label>
+              <Input
+                id="services"
+                placeholder="เช่น change tyre, alignment"
+                value={services}
+                onChange={(e) => setServices(e.target.value)}
+              />
             </div>
+            <div>
+              <Label htmlFor="notes">Notes</Label>
+              <Textarea
+                id="notes"
+                rows={3}
+                value={notes}
+                onChange={(e) => setNotes(e.target.value)}
+              />
+            </div>
+          </div>
 
-            <div className="flex items-center justify-end gap-3 pt-2">
-              <Button type="button" variant="outline" onClick={() => form.reset()}>Discard</Button>
-              <Button onClick={form.handleSubmit(onSubmit)}>Create Branch</Button>
-            </div>
-          </CardContent>
-        </Card>
+          {/* Actions */}
+          <div className="flex flex-wrap justify-end gap-2 pt-2">
+            <Button
+              variant="outline"
+              type="button"
+              onClick={testWrite}
+              disabled={testing}
+              title="ทดสอบเขียน/อ่าน Firestore"
+            >
+              {testing ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                  Testing…
+                </>
+              ) : (
+                <>
+                  <TestTube2 className="mr-2 h-4 w-4" />
+                  Test Firestore write
+                </>
+              )}
+            </Button>
 
-        {/* RIGHT: preview */}
-        <Card className="lg:col-span-1">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Preview</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div className="rounded-lg border p-3">
-              <div className="font-medium">{form.watch('branchName') || '—'}</div>
-              <div className="text-xs text-muted-foreground">{form.watch('branchId') || '—'}</div>
-              <div className="mt-2 grid grid-cols-2 gap-2">
-                <div>
-                  <div className="text-muted-foreground text-xs">Phone</div>
-                  <div>{form.watch('phone') || '—'}</div>
-                </div>
-                <div>
-                  <div className="text-muted-foreground text-xs">Email</div>
-                  <div>{form.watch('email') || '—'}</div>
-                </div>
-              </div>
-              <div className="mt-2">
-                <div className="text-muted-foreground text-xs">Province</div>
-                <div>{form.watch('address.province') || '—'}</div>
-              </div>
-              <div className="mt-2">
-                <div className="text-muted-foreground text-xs">Services</div>
-                <div className="flex flex-wrap gap-1 mt-1">
-                  {(form.watch('services') || []).length
-                    ? (form.watch('services') || []).map((s) => <Badge key={s} variant="secondary">{s}</Badge>)
-                    : <span>—</span>}
-                </div>
-              </div>
-            </div>
+            <Button variant="outline" type="button" onClick={clearForm}>
+              Clear
+            </Button>
 
-            <div className="rounded-lg border p-3">
-              <div className="font-medium mb-1">Tips</div>
-              <ul className="list-disc pl-5 space-y-1 text-muted-foreground">
-                <li>ตั้ง Branch ID ให้จำง่ายและสอดคล้องกับบริษัท (A–Z, 0–9, - _ .)</li>
-                <li>คุณสามารถ import สต็อกเข้าที่หลัง (CSV / migration script)</li>
-                <li>เปิด-ปิดสาขาได้ที่สวิตช์ “Active”</li>
-              </ul>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
+            <Button onClick={() => submit()} disabled={!canSubmit || submitting}>
+              {submitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving…
+                </>
+              ) : (
+                'Create Branch'
+              )}
+            </Button>
+
+            <Button
+              onClick={() => submit(`/inventory?branch=${encodeURIComponent(branchId)}`)}
+              disabled={!canSubmit || submitting || !branchId}
+              title="สร้างแล้วไปหน้าจัดการสต็อกสาขานี้"
+            >
+              {submitting ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Saving…
+                </>
+              ) : (
+                'Create & Manage Inventory'
+              )}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   );
 }

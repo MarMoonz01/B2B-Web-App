@@ -1,16 +1,20 @@
 'use client';
 
-import { useRouter } from 'next/navigation';
 import MyInventory from '@/src/app/components/MyInventory';
+import { useBranch } from '@/contexts/BranchContext';
 
 export default function InventoryPage() {
-  const router = useRouter();
+  const { selectedBranchId, branches } = useBranch();
+  const myBranchId = selectedBranchId ?? '';
+  const myBranchName = myBranchId ? (branches.find(b => b.id === myBranchId)?.branchName ?? '') : '';
 
-  // ถ้า MyInventory เรียก onNavigate('transfer_platform') ก็พาไปหน้า /transfer
   return (
     <MyInventory
-          onNavigate={(k) => {
-              if (k === 'transfer_platform') router.push('/transfer');
-          } } myBranchId={''} myBranchName={''}    />
+  myBranchId={myBranchId}
+  myBranchName={myBranchName}
+  onNavigate={(k) => {
+    if (k === 'transfer_platform') location.assign('/transfer-platform'); // ✅
+  }}
+/>
   );
 }
