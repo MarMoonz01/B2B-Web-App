@@ -22,11 +22,15 @@ import {
   AlertTriangle,
   Boxes,
   ArrowLeftRight,
+  Pencil,
 } from 'lucide-react';
 import { toast } from 'sonner';
-// services & types
-import { InventoryService, StoreService } from '@/lib/services/InventoryService';
-import type { GroupedProduct } from '@/lib/services/InventoryService';
+
+import {
+  InventoryService,
+  StoreService,
+  type GroupedProduct,
+} from '@/lib/services/InventoryService';
 
 // shadcn/ui
 import { Button } from '@/components/ui/button';
@@ -62,6 +66,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+
+// ----------------------------------------
 
 type SortKey =
   | 'relevance'
@@ -150,7 +156,7 @@ export default function MyInventory({
   const [hasPromotion, setHasPromotion] = useState(false);
   const [sortBy, setSortBy] = useState<SortKey>('relevance');
 
-  // Dialog states
+  // Dialog states: Add DOT / Promo / Delete DOT
   const [openAddDot, setOpenAddDot] = useState<{ open: boolean; row?: Row | null }>({
     open: false,
     row: null,
@@ -166,7 +172,14 @@ export default function MyInventory({
     dot?: Row['dotsAll'][number] | null;
   }>({ open: false, row: null, dot: null });
 
-  // Form states
+  // Dialog states: Add Product / Edit Product
+  const [openAddProduct, setOpenAddProduct] = useState(false);
+  const [openEditProduct, setOpenEditProduct] = useState<{ open: boolean; row?: Row | null }>({
+    open: false,
+    row: null,
+  });
+
+  // Add DOT form
   const [addForm, setAddForm] = useState<{
     variantId: string;
     dotCode: string;
@@ -178,8 +191,46 @@ export default function MyInventory({
     qty: 1,
     promoPrice: '',
   });
-  const [promoForm, setPromoForm] = useState<{ promoPrice: string }>({ promoPrice: '' });
-  const [availableVariants, setAvailableVariants] = useState<Array<{variantId: string, specification: string}>>([]);
+  const [availableVariants, setAvailableVariants] = useState<
+    Array<{ variantId: string; specification: string; basePrice?: number }>
+  >([]);
+
+  // Add Product form
+  const [addProductForm, setAddProductForm] = useState<{
+    brandName: string;
+    modelName: string;
+    size: string;
+    loadIndex: string;
+    basePrice?: string;
+    dotCode: string;
+    qty: number;
+    promoPrice?: string;
+  }>({
+    brandName: '',
+    modelName: '',
+    size: '',
+    loadIndex: '',
+    basePrice: '',
+    dotCode: '',
+    qty: 1,
+    promoPrice: '',
+  });
+
+  // Edit Product form
+  const [editProductForm, setEditProductForm] = useState<{
+    brandName: string;
+    modelName: string;
+    // quick add variant section
+    newSize: string;
+    newLoadIndex: string;
+    newBasePrice?: string;
+  }>({
+    brandName: '',
+    modelName: '',
+    newSize: '',
+    newLoadIndex: '',
+    newBasePrice: '',
+  });
 
   // Save view mode to localStorage
   useEffect(() => {
@@ -206,7 +257,7 @@ export default function MyInventory({
   const inventory = (invQuery.data?.inv ?? []) as GroupedProduct[];
   const branchName = invQuery.data?.branchName ?? myBranchName;
 
-  // ---------- Options Data ----------
+  // ---------- Options ----------
   const availableBrands = useMemo(
     () => Array.from(new Set(inventory.map((p) => p.brand ?? 'Unknown'))).sort(),
     [inventory]
@@ -254,7 +305,7 @@ export default function MyInventory({
           const promoPrice = d.promoPrice != null ? Number(d.promoPrice) : null;
           const price = promoPrice ?? basePrice;
           const hasPromo = promoPrice != null;
-          
+
           if (qty > 0) {
             allDots.push({
               dotCode: d.dotCode,
@@ -267,7 +318,7 @@ export default function MyInventory({
               promoPrice,
             });
             totalUnits += qty;
-            
+
             if (price > 0) {
               minPrice = Math.min(minPrice, price);
               maxPrice = Math.max(maxPrice, price);
@@ -281,10 +332,10 @@ export default function MyInventory({
       if (lowStockOnly && !(totalUnits > 0 && totalUnits < 6)) continue;
 
       allDots.sort((a, b) => b.qty - a.qty || a.price - b.price);
-      
+
       if (minPrice === Infinity) minPrice = 0;
 
-      const dotChips = allDots.slice(0, 3).map(d => ({
+      const dotChips = allDots.slice(0, 3).map((d) => ({
         dotCode: d.dotCode,
         qty: d.qty,
         price: d.price,
@@ -319,11 +370,7 @@ export default function MyInventory({
         selectedSize === 'All Sizes' ? true : r.dotsAll.some((d) => d.spec === selectedSize)
       )
       .filter((r) =>
-        !q
-          ? true
-          : `${r.productName} ${r.brand} ${r.model} ${r.specHighlight}`
-              .toLowerCase()
-              .includes(q)
+        !q ? true : `${r.productName} ${r.brand} ${r.model} ${r.specHighlight}`.toLowerCase().includes(q)
       )
       .filter((r) => (hasPromotion ? r.hasPromo : true));
 
@@ -365,12 +412,12 @@ export default function MyInventory({
     const units = rows.reduce((s, r) => s + r.available, 0);
     const low = rows.filter((r) => r.lowStock).length;
     const promo = rows.filter((r) => r.hasPromo).length;
-    const value = rows.reduce((s, r) => s + (r.available * r.minPrice), 0);
+    const value = rows.reduce((s, r) => s + r.available * r.minPrice, 0);
     const avgPrice = rows.length ? Math.round(rows.reduce((s, r) => s + r.minPrice, 0) / rows.length) : 0;
     return { products, units, low, promo, value, avgPrice };
   }, [rows]);
 
-  // ---------- Stock adjust ----------
+  // ---------- Mutations ----------
   const adjustMutation = useMutation({
     mutationFn: async (payload: {
       storeId: string;
@@ -398,61 +445,21 @@ export default function MyInventory({
     },
   });
 
-  const handleAdjust = (
-    r: Row,
-    d: Row['dotsAll'][number],
-    delta: number
-  ) => {
-    const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
-    
-    adjustMutation.mutate({
-      storeId: productInfo.storeId,
-      brandId: productInfo.brandId,
-      modelId: productInfo.modelId,
-      variantId: productInfo.variantId,
-      dotCode: productInfo.dotCode,
-      qtyChange: delta,
-    });
-  };
-
-  // ---------- Add DOT ----------
-  const openAddDotDialog = async (r: Row) => {
-    const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, '', '');
-    
-    try {
-      const variants = await InventoryService.getVariantsForProduct(
-        productInfo.storeId,
-        productInfo.brandId,
-        productInfo.modelId
-      );
-      
-      setAddForm({
-        variantId: variants[0]?.variantId ?? '',
-        dotCode: '',
-        qty: 1,
-        promoPrice: '',
-      });
-      
-      setAvailableVariants(variants);
-      setOpenAddDot({ open: true, row: r });
-    } catch (error) {
-      toast.error('Failed to load variants');
-    }
-  };
-
   const upsertDotMutation = useMutation({
     mutationFn: async () => {
       const r = openAddDot.row!;
       const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, addForm.variantId, addForm.dotCode);
-      
+
       await InventoryService.addNewDot(
         productInfo.storeId,
         productInfo.brandId,
         productInfo.modelId,
         productInfo.variantId,
-        addForm.dotCode.trim(),
-        Number(addForm.qty) || 0,
-        addForm.promoPrice?.trim() ? Number(addForm.promoPrice) : undefined
+        {
+          dotCode: addForm.dotCode.trim(),
+          qty: Number(addForm.qty) || 0,
+          promoPrice: addForm.promoPrice?.trim() ? Number(addForm.promoPrice) : undefined,
+        }
       );
     },
     onSuccess: () => {
@@ -463,14 +470,13 @@ export default function MyInventory({
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
 
-  // ---------- Set Promo ----------
   const setPromoMutation = useMutation({
     mutationFn: async () => {
       const r = openPromo.row!;
       const d = openPromo.dot!;
       const val = promoForm.promoPrice.trim();
       const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
-      
+
       await InventoryService.setPromoPrice(
         productInfo.storeId,
         productInfo.brandId,
@@ -488,13 +494,12 @@ export default function MyInventory({
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
 
-  // ---------- Delete DOT ----------
   const deleteDotMutation = useMutation({
     mutationFn: async () => {
       const r = openDelete.row!;
       const d = openDelete.dot!;
       const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
-      
+
       await InventoryService.deleteDot(
         productInfo.storeId,
         productInfo.brandId,
@@ -510,6 +515,154 @@ export default function MyInventory({
     },
     onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
   });
+
+  const updateProductMetaMutation = useMutation({
+    mutationFn: async (payload: {
+      storeId: string;
+      brandId: string;
+      modelId: string;
+      brandName?: string;
+      modelName?: string;
+    }) => {
+      await InventoryService.updateProductMeta(
+        payload.storeId,
+        payload.brandId,
+        payload.modelId,
+        { brandName: payload.brandName, modelName: payload.modelName }
+      );
+    },
+    onSuccess: () => {
+      toast.success('Product updated');
+      setOpenEditProduct({ open: false, row: null });
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
+    },
+    onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
+  });
+
+  const ensureVariantMutation = useMutation({
+    mutationFn: async (payload: {
+      storeId: string;
+      brandId: string;
+      modelId: string;
+      variantId: string;
+      init?: { size?: string; loadIndex?: string; basePrice?: number };
+    }) => {
+      await InventoryService.ensureVariantPath(
+        payload.storeId,
+        payload.brandId,
+        payload.modelId,
+        payload.variantId,
+        payload.init
+      );
+    },
+    onSuccess: () => {
+      toast.success('Variant added/updated');
+      setOpenEditProduct((p) => ({ open: true, row: p.row })); // keep open
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
+    },
+    onError: (e: any) => toast.error(`Failed: ${e?.message ?? 'Unknown error'}`),
+  });
+
+  const addProductMutation = useMutation({
+    mutationFn: async () => {
+      const brandName = addProductForm.brandName.trim();
+      const modelName = addProductForm.modelName.trim();
+      const size = addProductForm.size.trim();
+      const loadIndex = addProductForm.loadIndex.trim();
+      const basePrice = addProductForm.basePrice?.trim() ? Number(addProductForm.basePrice) : undefined;
+      const dotCode = addProductForm.dotCode.trim();
+      const qty = Number(addProductForm.qty) || 0;
+      const promoPrice = addProductForm.promoPrice?.trim() ? Number(addProductForm.promoPrice) : undefined;
+
+      if (!brandName || !modelName || !size || !dotCode) throw new Error('Please fill in required fields');
+
+      // 1) ensure brand/model
+      const { brandId } = await InventoryService.ensureBrandDoc(myBranchId, brandName);
+      const mm = await InventoryService.ensureModelDoc(myBranchId, brandId, modelName);
+      const modelId = mm.modelId;
+
+      // 2) ensure variant
+      const variantId = `${size.replace(/\s+/g, '').toLowerCase()}${loadIndex ? `-${loadIndex.replace(/\s+/g, '').toLowerCase()}` : ''}`;
+      await InventoryService.ensureVariantPath(myBranchId, brandId, modelId, variantId, {
+        size,
+        loadIndex,
+        basePrice,
+      });
+
+      // 3) add first DOT
+      await InventoryService.addNewDot(myBranchId, brandId, modelId, variantId, {
+        dotCode,
+        qty,
+        promoPrice,
+      });
+    },
+    onSuccess: () => {
+      toast.success('Product created');
+      setOpenAddProduct(false);
+      setAddProductForm({
+        brandName: '',
+        modelName: '',
+        size: '',
+        loadIndex: '',
+        basePrice: '',
+        dotCode: '',
+        qty: 1,
+        promoPrice: '',
+      });
+      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
+    },
+    onError: (e: any) => toast.error(e?.message ?? 'Failed'),
+  });
+
+  // ---------- Handlers ----------
+  const handleAdjust = (r: Row, d: Row['dotsAll'][number], delta: number) => {
+    const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, d.variantId, d.dotCode);
+
+    adjustMutation.mutate({
+      storeId: productInfo.storeId,
+      brandId: productInfo.brandId,
+      modelId: productInfo.modelId,
+      variantId: productInfo.variantId,
+      dotCode: productInfo.dotCode,
+      qtyChange: delta,
+    });
+  };
+
+  const openAddDotDialog = async (r: Row) => {
+    const productInfo = InventoryService.parseProductInfo(r.grouped, myBranchId, '', '');
+
+    try {
+      const variants = await InventoryService.getVariantsForProduct(
+        productInfo.storeId,
+        productInfo.brandId,
+        productInfo.modelId
+      );
+
+      setAddForm({
+        variantId: variants[0]?.variantId ?? '',
+        dotCode: '',
+        qty: 1,
+        promoPrice: '',
+      });
+
+      setAvailableVariants(variants);
+      setOpenAddDot({ open: true, row: r });
+    } catch (error) {
+      toast.error('Failed to load variants');
+    }
+  };
+
+  const handleOpenEditProduct = (r: Row) => {
+    // เตรียมค่าเริ่มต้นจากชื่อที่แสดงอยู่
+    setEditProductForm({
+      brandName: r.brand,
+      modelName: r.model,
+      newSize: '',
+      newLoadIndex: '',
+      newBasePrice: '',
+    });
+    setOpenEditProduct({ open: true, row: r });
+  };
 
   // ---------- Export CSV ----------
   const exportCSV = () => {
@@ -538,7 +691,7 @@ export default function MyInventory({
       <div>
         <h1 className="text-2xl font-bold">My Inventory</h1>
         <p className="text-muted-foreground">
-          View and adjust stock for <span className="font-medium">{branchName}</span>.
+          View and manage stock for <span className="font-medium">{branchName}</span>.
         </p>
       </div>
       <div className="flex items-center gap-2">
@@ -549,6 +702,10 @@ export default function MyInventory({
         <Button variant="outline" size="sm" onClick={exportCSV}>
           <Download className="h-4 w-4 mr-2" />
           Export CSV
+        </Button>
+        <Button size="sm" onClick={() => setOpenAddProduct(true)}>
+          <Plus className="h-4 w-4 mr-2" />
+          Add Product
         </Button>
         {onNavigate && (
           <Button size="sm" onClick={() => onNavigate('transfer_platform')}>
@@ -619,7 +776,7 @@ export default function MyInventory({
 
   const FilterBar = (
     <div className="border-b bg-muted/20 p-6">
-    <div className="w-full space-y-4">
+      <div className="w-full space-y-4">
         {/* Search & Sort */}
         <div className="flex items-center gap-4">
           <div className="relative flex-1 max-w-md">
@@ -665,7 +822,7 @@ export default function MyInventory({
                 <TooltipContent>Table view with expandable rows</TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            
+
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -682,7 +839,7 @@ export default function MyInventory({
                 <TooltipContent>Grid cards view</TooltipContent>
               </Tooltip>
             </TooltipProvider>
-            
+
             <TooltipProvider>
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -761,18 +918,18 @@ export default function MyInventory({
   );
 
   // ---------- Table (expandable rows) ----------
-  const GRID_COLS = 'minmax(420px,1.2fr) minmax(220px,0.8fr) 120px 120px 120px';
+  const GRID_COLS = 'minmax(420px,1.2fr) minmax(220px,0.8fr) 120px 160px 160px';
 
   const TableHeader = (
     <div
-      className="grid gap-4 px-4 py-3 text-xs text-muted-foreground min-w-[980px] bg-slate-50/70 border-b"
+      className="grid gap-4 px-4 py-3 text-xs text-muted-foreground min-w-[1080px] bg-slate-50/70 border-b"
       style={{ gridTemplateColumns: GRID_COLS }}
     >
       <div>Product</div>
       <div>Branch</div>
       <div className="text-right">Available</div>
       <div className="text-right">Price Range</div>
-      <div />
+      <div className="text-right">Actions</div>
     </div>
   );
 
@@ -792,7 +949,7 @@ export default function MyInventory({
         return (
           <div key={r.key} className="border-b px-5 py-4 hover:bg-slate-50/60 transition-colors">
             <div
-              className="grid gap-4 items-start min-w-[980px]"
+              className="grid gap-4 items-start min-w-[1080px]"
               style={{ gridTemplateColumns: GRID_COLS }}
             >
               {/* Product */}
@@ -835,8 +992,8 @@ export default function MyInventory({
                         <span
                           key={`${r.key}-chip-${chip.dotCode}-${i}`}
                           className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
-                            chip.hasPromo 
-                              ? 'bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-50' 
+                            chip.hasPromo
+                              ? 'bg-green-100 text-green-800 dark:bg-green-800 dark:text-green-50'
                               : 'bg-muted'
                           }`}
                         >
@@ -888,15 +1045,21 @@ export default function MyInventory({
 
               {/* Actions */}
               <div className="text-right">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    setExpandedKey((prev) => (prev === r.key ? null : r.key))
-                  }
-                >
-                  Manage
-                </Button>
+                <div className="inline-flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() =>
+                      setExpandedKey((prev) => (prev === r.key ? null : r.key))
+                    }
+                  >
+                    Manage
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => handleOpenEditProduct(r)}>
+                    <Pencil className="h-4 w-4 mr-1" />
+                    Edit
+                  </Button>
+                </div>
               </div>
             </div>
 
@@ -910,10 +1073,7 @@ export default function MyInventory({
                   </div>
 
                   {/* ปุ่ม Add DOT */}
-                  <Button
-                    size="sm"
-                    onClick={() => openAddDotDialog(r)}
-                  >
+                  <Button size="sm" onClick={() => openAddDotDialog(r)}>
                     + Add DOT
                   </Button>
                 </div>
@@ -981,8 +1141,8 @@ export default function MyInventory({
                             <DropdownMenuLabel>Actions</DropdownMenuLabel>
                             <DropdownMenuItem
                               onClick={() => {
-                                setPromoForm({ 
-                                  promoPrice: d.promoPrice ? String(d.promoPrice) : '' 
+                                setPromoForm({
+                                  promoPrice: d.promoPrice ? String(d.promoPrice) : '',
                                 });
                                 setOpenPromo({ open: true, row: r, dot: d });
                               }}
@@ -1015,16 +1175,12 @@ export default function MyInventory({
   const GridView = (
     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
       {isLoading
-        ? Array.from({ length: 6 }).map((_, i) => (
-            <Skeleton key={i} className="h-48 w-full" />
-          ))
+        ? Array.from({ length: 6 }).map((_, i) => <Skeleton key={i} className="h-48 w-full" />)
         : rows.length
         ? rows.map((r) => (
             <Card key={r.key} className="relative hover:shadow-md transition-shadow">
               <div className="absolute top-3 right-3 flex gap-1">
-                <Badge variant={r.lowStock ? 'destructive' : 'secondary'}>
-                  {r.available} units
-                </Badge>
+                <Badge variant={r.lowStock ? 'destructive' : 'secondary'}>{r.available} units</Badge>
                 {r.hasPromo && (
                   <Badge variant="secondary" className="bg-green-100 text-green-800">
                     Sale
@@ -1032,8 +1188,15 @@ export default function MyInventory({
                 )}
               </div>
               <CardHeader className="pb-2">
-                <CardTitle className="text-base pr-20">{r.productName}</CardTitle>
-                <CardDescription>{r.brand} {r.model && `• ${r.model}`}</CardDescription>
+                <CardTitle className="text-base pr-24 flex items-center justify-between">
+                  <span className="truncate">{r.productName}</span>
+                  <Button size="icon" variant="ghost" onClick={() => handleOpenEditProduct(r)} title="Edit product">
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </CardTitle>
+                <CardDescription>
+                  {r.brand} {r.model && `• ${r.model}`}
+                </CardDescription>
                 <div className="text-xs text-muted-foreground">{r.specHighlight}</div>
               </CardHeader>
               <CardContent className="space-y-3">
@@ -1043,9 +1206,7 @@ export default function MyInventory({
                       <span
                         key={`${r.key}-chip-grid-${chip.dotCode}-${i}`}
                         className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] ${
-                          chip.hasPromo 
-                            ? 'bg-green-100 text-green-800' 
-                            : 'bg-muted'
+                          chip.hasPromo ? 'bg-green-100 text-green-800' : 'bg-muted'
                         }`}
                       >
                         <span className="font-mono">{chip.dotCode}</span>
@@ -1084,18 +1245,10 @@ export default function MyInventory({
                 </div>
 
                 <div className="flex items-center justify-between gap-2">
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => openAddDotDialog(r)}
-                  >
+                  <Button size="sm" variant="outline" onClick={() => openAddDotDialog(r)}>
                     + Add DOT
                   </Button>
-                  <Button
-                    size="sm"
-                    onClick={() => setExpandedKey(r.key)}
-                    title="Manage"
-                  >
+                  <Button size="sm" onClick={() => setExpandedKey(r.key)} title="Manage">
                     <Settings className="h-4 w-4 mr-2" />
                     Manage
                   </Button>
@@ -1189,6 +1342,10 @@ export default function MyInventory({
                 <CardTitle className="text-base flex items-center justify-between">
                   <span>{r.productName}</span>
                   <div className="flex gap-1">
+                    <Button size="sm" variant="ghost" onClick={() => handleOpenEditProduct(r)}>
+                      <Pencil className="h-4 w-4 mr-1" />
+                      Edit
+                    </Button>
                     {r.hasPromo && (
                       <Badge variant="secondary" className="bg-green-100 text-green-800">
                         Sale
@@ -1199,7 +1356,9 @@ export default function MyInventory({
                     </Badge>
                   </div>
                 </CardTitle>
-                <CardDescription>{r.branchName} • {r.brand} {r.model}</CardDescription>
+                <CardDescription>
+                  {r.branchName} • {r.brand} {r.model}
+                </CardDescription>
               </CardHeader>
               <CardContent className="pt-2">
                 <ScrollArea className="w-full">
@@ -1238,10 +1397,7 @@ export default function MyInventory({
                             const hasPromo = cell?.hasPromo ?? false;
                             if (qty > 0) rowTotal += qty;
                             return (
-                              <div
-                                key={`${r.key}-cell-${spec}-${dc}`}
-                                className="px-2 py-2 border bg-white"
-                              >
+                              <div key={`${r.key}-cell-${spec}-${dc}`} className="px-2 py-2 border bg-white">
                                 {qty > 0 ? (
                                   <div className="flex flex-col items-center gap-1">
                                     <div className="text-xs font-mono">{qty}</div>
@@ -1316,10 +1472,7 @@ export default function MyInventory({
                     })}
 
                     {/* footer total per column */}
-                    <div
-                      className="grid"
-                      style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}
-                    >
+                    <div className="grid" style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}>
                       <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border">
                         Column total
                       </div>
@@ -1328,10 +1481,7 @@ export default function MyInventory({
                           .filter((d) => d.dotCode === dc)
                           .reduce((s, d) => s + d.qty, 0);
                         return (
-                          <div
-                            key={`${r.key}-colsum-${dc}`}
-                            className="px-3 py-2 text-sm text-center border bg-slate-50"
-                          >
+                          <div key={`${r.key}-colsum-${dc}`} className="px-3 py-2 text-sm text-center border bg-slate-50">
                             {colTotal}
                           </div>
                         );
@@ -1350,6 +1500,10 @@ export default function MyInventory({
     </div>
   );
 
+  // ---------- Promo form state ----------
+  const [promoForm, setPromoForm] = useState<{ promoPrice: string }>({ promoPrice: '' });
+
+  // ---------- Render ----------
   return (
     <div className="space-y-6 md:space-y-8">
       {Header}
@@ -1382,7 +1536,6 @@ export default function MyInventory({
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-3">
-            {/* เลือกสเปค (variant) */}
             <div>
               <Label className="text-xs">Specification</Label>
               <Select
@@ -1518,7 +1671,9 @@ export default function MyInventory({
           </DialogHeader>
           <div className="space-y-2 text-sm">
             <div>
-              Are you sure you want to delete DOT <span className="font-mono font-semibold">{openDelete.dot?.dotCode}</span> ({openDelete.dot?.spec})?
+              Are you sure you want to delete DOT{' '}
+              <span className="font-mono font-semibold">{openDelete.dot?.dotCode}</span> (
+              {openDelete.dot?.spec})?
             </div>
             <div className="text-muted-foreground text-xs">
               Current quantity: {openDelete.dot?.qty || 0} units
@@ -1537,6 +1692,254 @@ export default function MyInventory({
               disabled={deleteDotMutation.isPending}
             >
               {deleteDotMutation.isPending ? 'Deleting…' : 'Delete DOT'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Add Product dialog */}
+      <Dialog open={openAddProduct} onOpenChange={setOpenAddProduct}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Add Product</DialogTitle>
+            <DialogDescription>Create brand/model + first variant and DOT.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Brand *</Label>
+                <Input
+                  className="mt-1"
+                  value={addProductForm.brandName}
+                  onChange={(e) => setAddProductForm((f) => ({ ...f, brandName: e.target.value }))}
+                  placeholder="e.g. Bridgestone"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Model *</Label>
+                <Input
+                  className="mt-1"
+                  value={addProductForm.modelName}
+                  onChange={(e) => setAddProductForm((f) => ({ ...f, modelName: e.target.value }))}
+                  placeholder="e.g. Turanza T005A"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div className="col-span-2">
+                <Label className="text-xs">Size *</Label>
+                <Input
+                  className="mt-1"
+                  value={addProductForm.size}
+                  onChange={(e) => setAddProductForm((f) => ({ ...f, size: e.target.value }))}
+                  placeholder="e.g. 215/55R17"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Load/Index</Label>
+                <Input
+                  className="mt-1"
+                  value={addProductForm.loadIndex}
+                  onChange={(e) =>
+                    setAddProductForm((f) => ({ ...f, loadIndex: e.target.value }))
+                  }
+                  placeholder="e.g. 94V"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-3 gap-3">
+              <div>
+                <Label className="text-xs">Base price</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="mt-1"
+                  value={addProductForm.basePrice}
+                  onChange={(e) =>
+                    setAddProductForm((f) => ({ ...f, basePrice: e.target.value }))
+                  }
+                  placeholder="e.g. 3200"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">DOT code *</Label>
+                <Input
+                  className="mt-1 font-mono"
+                  value={addProductForm.dotCode}
+                  onChange={(e) => setAddProductForm((f) => ({ ...f, dotCode: e.target.value }))}
+                  placeholder="e.g. 2325"
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Quantity *</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  className="mt-1"
+                  value={addProductForm.qty}
+                  onChange={(e) =>
+                    setAddProductForm((f) => ({ ...f, qty: Number(e.target.value) || 0 }))
+                  }
+                />
+              </div>
+            </div>
+
+            <div>
+              <Label className="text-xs">Promo price (optional)</Label>
+              <Input
+                type="number"
+                min={0}
+                className="mt-1"
+                value={addProductForm.promoPrice}
+                onChange={(e) =>
+                  setAddProductForm((f) => ({ ...f, promoPrice: e.target.value }))
+                }
+                placeholder="Leave empty for none"
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpenAddProduct(false)}>
+              Cancel
+            </Button>
+            <Button onClick={() => addProductMutation.mutate()} disabled={addProductMutation.isPending}>
+              {addProductMutation.isPending ? 'Saving…' : 'Create'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Product dialog */}
+      <Dialog
+        open={openEditProduct.open}
+        onOpenChange={(o) => setOpenEditProduct({ open: o, row: o ? openEditProduct.row : null })}
+      >
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Edit Product</DialogTitle>
+            <DialogDescription>Change display names + add a new variant.</DialogDescription>
+          </DialogHeader>
+
+          <div className="space-y-4">
+            {/* Display names */}
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <Label className="text-xs">Brand name</Label>
+                <Input
+                  className="mt-1"
+                  value={editProductForm.brandName}
+                  onChange={(e) =>
+                    setEditProductForm((f) => ({ ...f, brandName: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <Label className="text-xs">Model name</Label>
+                <Input
+                  className="mt-1"
+                  value={editProductForm.modelName}
+                  onChange={(e) =>
+                    setEditProductForm((f) => ({ ...f, modelName: e.target.value }))
+                  }
+                />
+              </div>
+            </div>
+
+            {/* Quick add variant */}
+            <div className="rounded-md border p-3 space-y-3">
+              <div className="text-xs font-medium text-muted-foreground">Add Variant</div>
+              <div className="grid grid-cols-6 gap-3">
+                <div className="col-span-3">
+                  <Label className="text-xs">Size</Label>
+                  <Input
+                    className="mt-1"
+                    value={editProductForm.newSize}
+                    onChange={(e) =>
+                      setEditProductForm((f) => ({ ...f, newSize: e.target.value }))
+                    }
+                    placeholder="e.g. 215/60R16"
+                  />
+                </div>
+                <div className="col-span-2">
+                  <Label className="text-xs">Load/Index</Label>
+                  <Input
+                    className="mt-1"
+                    value={editProductForm.newLoadIndex}
+                    onChange={(e) =>
+                      setEditProductForm((f) => ({ ...f, newLoadIndex: e.target.value }))
+                    }
+                    placeholder="e.g. 95H"
+                  />
+                </div>
+                <div className="col-span-1">
+                  <Label className="text-xs">Base</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    className="mt-1"
+                    value={editProductForm.newBasePrice}
+                    onChange={(e) =>
+                      setEditProductForm((f) => ({ ...f, newBasePrice: e.target.value }))
+                    }
+                    placeholder="0"
+                  />
+                </div>
+              </div>
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  onClick={() => {
+                    const r = openEditProduct.row!;
+                    const info = InventoryService.parseProductInfo(r.grouped, myBranchId, '', '');
+                    const variantId = `${editProductForm.newSize.replace(/\s+/g, '').toLowerCase()}${
+                      editProductForm.newLoadIndex
+                        ? `-${editProductForm.newLoadIndex.replace(/\s+/g, '').toLowerCase()}`
+                        : ''
+                    }`;
+
+                    ensureVariantMutation.mutate({
+                      storeId: info.storeId,
+                      brandId: info.brandId,
+                      modelId: info.modelId,
+                      variantId,
+                      init: {
+                        size: editProductForm.newSize.trim() || undefined,
+                        loadIndex: editProductForm.newLoadIndex.trim() || undefined,
+                        basePrice: editProductForm.newBasePrice?.trim()
+                          ? Number(editProductForm.newBasePrice)
+                          : undefined,
+                      },
+                    });
+                  }}
+                  disabled={!editProductForm.newSize.trim() && !editProductForm.newLoadIndex.trim()}
+                >
+                  Add Variant
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setOpenEditProduct({ open: false, row: null })}>
+              Close
+            </Button>
+            <Button
+              onClick={() => {
+                const r = openEditProduct.row!;
+                const info = InventoryService.parseProductInfo(r.grouped, myBranchId, '', '');
+                updateProductMetaMutation.mutate({
+                  storeId: info.storeId,
+                  brandId: info.brandId,
+                  modelId: info.modelId,
+                  brandName: editProductForm.brandName.trim() || undefined,
+                  modelName: editProductForm.modelName.trim() || undefined,
+                });
+              }}
+              disabled={updateProductMetaMutation.isPending}
+            >
+              {updateProductMetaMutation.isPending ? 'Saving…' : 'Save'}
             </Button>
           </DialogFooter>
         </DialogContent>

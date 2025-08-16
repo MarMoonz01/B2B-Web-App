@@ -1,27 +1,25 @@
 // lib/services/InventoryService.ts
-// === Firestore Services for Stores, Inventory, and Orders ===
-
 import {
-  collection,
-  doc,
-  getDocs,
-  getDoc,
-  query,
-  where,
-  setDoc,
-  updateDoc,
-  deleteDoc,
-  serverTimestamp,
-  increment,
   addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
   onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
   Timestamp,
+  updateDoc,
+  where,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 /* =========================
  * Types
- * ========================= */
+ * =======================*/
 
 export type Dot = {
   dotCode: string;
@@ -34,40 +32,36 @@ export type Dot = {
 
 export type Variant = {
   variantId: string;
-  size: string;
+  size?: string;
   loadIndex?: string;
   basePrice?: number;
-  dots: Dot[];
   updatedAt?: any;
+  // convenience (บางหน้าอยากได้สตริงรวม)
+  specification?: string;
 };
 
 export type Model = {
   modelId: string;
   modelName: string;
-  variants: Variant[];
+  variants?: Variant[];
   updatedAt?: any;
 };
 
 export type Brand = {
   brandId: string;
   brandName: string;
-  models: Model[];
+  models?: Model[];
   updatedAt?: any;
-};
-
-export type StoreInventory = {
-  storeId: string;
-  storeName: string;
-  brands: Brand[];
 };
 
 export type SizeVariant = {
   variantId: string;
   specification: string; // size + loadIndex
+  basePrice?: number;
   dots: {
     dotCode: string;
     qty: number;
-    basePrice: number;
+    basePrice?: number;
     promoPrice?: number | null;
   }[];
 };
@@ -79,10 +73,10 @@ export type BranchInventory = {
 };
 
 export type GroupedProduct = {
-  id: string; // brand-model (slug)
-  name: string; // brandName + modelName
-  brand: string;
-  model?: string;
+  id: string; // brandId-modelId
+  name: string; // `${brandName} ${modelName}`
+  brand: string; // brandName
+  model?: string; // modelName
   branches: BranchInventory[];
 };
 
@@ -106,17 +100,26 @@ export type StockMovement = {
 };
 
 export type OrderItem = {
-  productId: string;            // "<brandId>-<modelId>"
+  productId: string;
   productName: string;
   specification: string;
   dotCode: string;
   quantity: number;
   unitPrice: number;
   totalPrice: number;
-  variantId: string;            // variantId from source branch
+  variantId: string;
 };
 
-export type OrderStatus = 'requested' | 'confirmed' | 'delivered' | 'cancelled';
+// Current + legacy (confirmed, delivered) for compatibility
+export type OrderStatus =
+  | 'requested'
+  | 'approved'
+  | 'rejected'
+  | 'shipped'
+  | 'received'
+  | 'cancelled'
+  | 'confirmed' // legacy -> treat as approved
+  | 'delivered'; // legacy -> treat as shipped/received in old UIs
 
 export type Order = {
   id?: string;
@@ -161,60 +164,32 @@ export type StoreDoc = {
 };
 
 /* =========================
- * Helpers
- * ========================= */
-
+ * Utils
+ * =======================*/
 export function slugifyId(s: string): string {
-  return s
+  return (s || '')
+    .toString()
+    .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '-')
     .replace(/(^-|-$)+/g, '')
     .slice(0, 120);
 }
 
-export function ensureArray<T>(v: T | T[] | undefined | null): T[] {
+function ensureArray<T>(v: T | T[] | undefined | null): T[] {
   if (!v) return [];
   return Array.isArray(v) ? v : [v];
 }
 
-/** ลบ key ที่เป็น undefined ออกจาก object/array ทุกระดับ */
-export function stripUndefinedDeep<T>(input: T): T {
-  if (input === undefined) return undefined as any;
-  if (input === null) return input;
-  if (Array.isArray(input)) {
-    return input
-      .map((v) => stripUndefinedDeep(v))
-      .filter((v) => v !== undefined) as any;
-  }
-  if (typeof input === 'object') {
-    const out: any = {};
-    for (const [k, v] of Object.entries(input as any)) {
-      const cleaned = stripUndefinedDeep(v as any);
-      if (cleaned !== undefined) out[k] = cleaned;
-    }
-    return out;
-  }
-  return input;
-}
-
-// "205/55R16 (94V)" => {size, loadIndex}
-function parseSpec(spec: string): { size: string; loadIndex?: string } {
-  const m = spec.match(/^(.*?)\s*\((.*?)\)\s*$/);
-  if (!m) return { size: spec.trim() };
-  return { size: m[1].trim(), loadIndex: m[2].trim() };
-}
-
-function splitProductId(productId: string): { brandId: string; modelId: string } {
-  const parts = String(productId || '').split('-');
-  const brandId = parts[0] || 'unknown';
-  const modelId = parts.slice(1).join('-') || 'unknown';
-  return { brandId, modelId };
+function specFromVariant(v: { size?: string; loadIndex?: string } | null | undefined) {
+  const size = (v?.size || '').trim();
+  const li = (v?.loadIndex || '').trim();
+  return size && li ? `${size} (${li})` : (size || li || '');
 }
 
 /* =========================
  * Store Service
- * ========================= */
-
+ * =======================*/
 export const StoreService = {
   async getAllStores(): Promise<Record<string, string>> {
     const snap = await getDocs(collection(db, 'stores'));
@@ -227,56 +202,198 @@ export const StoreService = {
   },
 
   async isStoreIdAvailable(storeId: string): Promise<boolean> {
-    try {
-      const ref = doc(db, 'stores', storeId);
-      const ds = await getDoc(ref);
-      return !ds.exists();
-    } catch {
-      return false;
-    }
+    const ref = doc(db, 'stores', storeId);
+    const ds = await getDoc(ref);
+    return !ds.exists();
   },
 
   async createStore(storeId: string, payload: StoreDoc): Promise<void> {
     const ref = doc(db, 'stores', storeId);
-    const data = stripUndefinedDeep({
+    await setDoc(ref, {
       ...payload,
+      // ป้องกัน undefined ใส่เป็น null ดีกว่า
+      phone: payload.phone ?? null,
+      email: payload.email ?? null,
+      lineId: payload.lineId ?? null,
+      address: payload.address ?? {},
+      location: payload.location ?? {},
+      services: payload.services ?? [],
+      notes: payload.notes ?? null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
-    await setDoc(ref, data);
   },
 
   async updateStore(storeId: string, patch: Partial<StoreDoc>): Promise<void> {
     const ref = doc(db, 'stores', storeId);
-    const data = stripUndefinedDeep({
+    await updateDoc(ref, {
       ...patch,
       updatedAt: serverTimestamp(),
     });
-    await updateDoc(ref, data);
   },
 
   async getStore(storeId: string): Promise<StoreDoc | null> {
     const ref = doc(db, 'stores', storeId);
     const ds = await getDoc(ref);
-    return ds.exists() ? ({ ...ds.data() } as StoreDoc) : null;
+    if (!ds.exists()) return null;
+    return { ...(ds.data() as any) } as StoreDoc;
   },
 };
 
 /* =========================
  * Inventory Service
- * ========================= */
-
+ *  - API ที่หน้า UI ใช้จริง + alias บางตัว
+ * =======================*/
 export const InventoryService = {
+  /* ---------- Ensure helpers (เบา ๆ เพื่อใช้ตอนสร้าง/แก้ไข) ---------- */
+
+  async ensureBrandDoc(storeId: string, brandName: string): Promise<{ brandId: string }> {
+    const brandId = slugifyId(brandName);
+    const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
+    const snap = await getDoc(brandRef);
+    if (!snap.exists()) {
+      await setDoc(brandRef, {
+        brandName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      // sync ชื่อให้ถูก (ถ้า UI แก้ชื่อ)
+      const cur = snap.data()?.brandName;
+      if (cur !== brandName && brandName) {
+        await updateDoc(brandRef, { brandName, updatedAt: serverTimestamp() });
+      }
+    }
+    return { brandId };
+  },
+
+  async ensureModelDoc(
+    storeId: string,
+    brandIdOrName: string,
+    modelName: string
+  ): Promise<{ brandId: string; modelId: string }> {
+    const brandId = slugifyId(brandIdOrName);
+    const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
+    const b = await getDoc(brandRef);
+    if (!b.exists()) {
+      await setDoc(brandRef, {
+        brandName: brandIdOrName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    }
+
+    const modelId = slugifyId(modelName);
+    const modelRef = doc(brandRef, 'models', modelId);
+    const m = await getDoc(modelRef);
+    if (!m.exists()) {
+      await setDoc(modelRef, {
+        modelName,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else {
+      const cur = m.data()?.modelName;
+      if (cur !== modelName && modelName) {
+        await updateDoc(modelRef, { modelName, updatedAt: serverTimestamp() });
+      }
+    }
+    return { brandId, modelId };
+  },
+
+  /** สร้าง variant ถ้ายังไม่มี (กรณี dialog สร้างสเปคใหม่) */
+  async ensureVariantPath(
+    storeId: string,
+    brandId: string,
+    modelId: string,
+    variantId: string,
+    init?: { size?: string; loadIndex?: string; basePrice?: number }
+  ): Promise<{ brandId: string; modelId: string; variantId: string }> {
+    const vRef = doc(
+      db,
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants',
+      variantId
+    );
+    const v = await getDoc(vRef);
+    if (!v.exists()) {
+      await setDoc(vRef, {
+        size: init?.size ?? null,
+        loadIndex: init?.loadIndex ?? null,
+        basePrice: init?.basePrice ?? null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else if (init && (init.size || init.loadIndex || typeof init.basePrice === 'number')) {
+      await updateDoc(vRef, {
+        ...(init.size !== undefined ? { size: init.size } : {}),
+        ...(init.loadIndex !== undefined ? { loadIndex: init.loadIndex } : {}),
+        ...(init.basePrice !== undefined ? { basePrice: init.basePrice } : {}),
+        updatedAt: serverTimestamp(),
+      });
+    }
+    return { brandId, modelId, variantId };
+  },
+
+  /** สร้าง dot ถ้ายังไม่มี (ใช้เวลาสร้าง/แก้ไขเฉพาะตัว) */
+  async ensureDotDoc(
+    storeId: string,
+    brandId: string,
+    modelId: string,
+    variantId: string,
+    dotCode: string,
+    init?: { qty?: number; promoPrice?: number | null }
+  ): Promise<void> {
+    const dRef = doc(
+      db,
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants',
+      variantId,
+      'dots',
+      dotCode
+    );
+    const d = await getDoc(dRef);
+    if (!d.exists()) {
+      await setDoc(dRef, {
+        qty: Math.max(0, init?.qty ?? 0),
+        promoPrice: init?.promoPrice ?? null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+    } else if (init) {
+      await updateDoc(dRef, {
+        ...(init.qty !== undefined ? { qty: Math.max(0, init.qty) } : {}),
+        ...(init.promoPrice !== undefined ? { promoPrice: init.promoPrice } : {}),
+        updatedAt: serverTimestamp(),
+      });
+    }
+  },
+
+  /* ---------- Read: inventory ---------- */
+
+  /** ดึง inventory ของสาขาเดียว */
   async fetchStoreInventory(storeId: string, storeName?: string): Promise<GroupedProduct[]> {
     const storeRef = doc(db, 'stores', storeId);
     const inventoryRef = collection(storeRef, 'inventory');
-
     const brandsSnap = await getDocs(inventoryRef);
+
+    if (brandsSnap.empty) return [];
+
     const products: GroupedProduct[] = [];
 
     for (const brandDoc of brandsSnap.docs) {
       const brandId = brandDoc.id;
-      const brandData = brandDoc.data();
+      const brandData = brandDoc.data() as any;
       const brandName = brandData.brandName || brandId;
 
       const modelsRef = collection(brandDoc.ref, 'models');
@@ -284,49 +401,48 @@ export const InventoryService = {
 
       for (const modelDoc of modelsSnap.docs) {
         const modelId = modelDoc.id;
-        const modelData = modelDoc.data();
+        const modelData = modelDoc.data() as any;
         const modelName = modelData.modelName || modelId;
 
         const variantsRef = collection(modelDoc.ref, 'variants');
         const variantsSnap = await getDocs(variantsRef);
 
         const sizes: SizeVariant[] = [];
-
         for (const variantDoc of variantsSnap.docs) {
-          const variantData = variantDoc.data();
+          const vData = variantDoc.data() as any;
           const variantId = variantDoc.id;
-          const size = variantData.size || '';
-          const loadIndex = variantData.loadIndex || '';
-          const basePrice = Number(variantData.basePrice || 0);
-          const specification = loadIndex ? `${size} (${loadIndex})` : size;
+          const specification = specFromVariant(vData);
+          const basePrice = vData.basePrice ?? undefined;
 
           const dotsRef = collection(variantDoc.ref, 'dots');
           const dotsSnap = await getDocs(dotsRef);
 
           const dots = dotsSnap.docs
-            .map((dotDoc) => {
-              const d = dotDoc.data();
-              const qty = Number(d.qty || 0);
+            .map((d) => {
+              const dd = d.data() as any;
               return {
-                dotCode: dotDoc.id,
-                qty,
+                dotCode: d.id,
+                qty: Number(dd.qty || 0),
                 basePrice,
-                promoPrice: d.promoPrice ?? null,
+                promoPrice: dd.promoPrice ?? null,
               };
             })
-            .filter((x) => x.qty > 0);
+            .filter((d) => d.qty > 0);
 
           if (dots.length > 0) {
-            sizes.push({ variantId, specification, dots });
+            sizes.push({
+              variantId,
+              specification,
+              basePrice,
+              dots,
+            });
           }
         }
 
         if (sizes.length > 0) {
-          const productId = `${brandId}-${modelId}`;
-          const productName = `${brandName} ${modelName}`;
           products.push({
-            id: productId,
-            name: productName,
+            id: `${brandId}-${modelId}`,
+            name: `${brandName} ${modelName}`.trim(),
             brand: brandName,
             model: modelName,
             branches: [
@@ -340,57 +456,78 @@ export const InventoryService = {
         }
       }
     }
-
     return products;
   },
 
+  /** ดึง inventory ทุกสาขา (รวมเป็น product เดียวกัน) */
   async fetchInventory(): Promise<GroupedProduct[]> {
     const storesSnap = await getDocs(collection(db, 'stores'));
+    if (storesSnap.empty) return [];
+
     const productMap = new Map<string, GroupedProduct>();
 
-    for (const storeDoc of storesSnap.docs) {
-      const storeId = storeDoc.id;
-      const storeName = (storeDoc.data() as any).branchName || storeId;
+    for (const s of storesSnap.docs) {
+      const storeId = s.id;
+      const storeName = (s.data() as any)?.branchName || s.id;
 
       try {
         const storeProducts = await this.fetchStoreInventory(storeId, storeName);
-        for (const product of storeProducts) {
-          const key = product.id;
-          if (productMap.has(key)) {
-            productMap.get(key)!.branches.push(...product.branches);
+        for (const p of storeProducts) {
+          if (productMap.has(p.id)) {
+            productMap.get(p.id)!.branches.push(...p.branches);
           } else {
-            productMap.set(key, { ...product });
+            productMap.set(p.id, { ...p });
           }
         }
-      } catch (e) {
-        console.warn(`Failed to fetch inventory for store ${storeId}:`, e);
+      } catch {
+        // skip store error
       }
     }
-
     return Array.from(productMap.values());
   },
 
-  async updateDotQuantity(
+  /** แปลง GroupedProduct → path ids */
+  parseProductInfo(
+    product: GroupedProduct,
+    branchId: string,
+    variantId: string,
+    dotCode: string
+  ) {
+    const parts = (product.id || '').split('-');
+    const brandId = parts[0] || slugifyId(product.brand);
+    const modelId = parts.slice(1).join('-') || slugifyId(product.model || 'unknown');
+
+    return { storeId: branchId, brandId, modelId, variantId, dotCode };
+  },
+
+  /** รายการ variants (สำหรับ dropdown เลือก spec) */
+  async getVariantsForProduct(
     storeId: string,
     brandId: string,
-    modelId: string,
-    variantId: string,
-    dotCode: string,
-    newQty: number
-  ): Promise<void> {
-    const dotRef = doc(
+    modelId: string
+  ): Promise<Array<{ variantId: string; specification: string; basePrice?: number }>> {
+    const vRef = collection(
       db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants', variantId,
-      'dots', dotCode
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants'
     );
-    await updateDoc(dotRef, {
-      qty: Math.max(0, newQty),
-      updatedAt: serverTimestamp(),
+    const vs = await getDocs(vRef);
+    return vs.docs.map((d) => {
+      const data = d.data() as any;
+      return {
+        variantId: d.id,
+        specification: specFromVariant(data),
+        basePrice: data.basePrice ?? undefined,
+      };
     });
   },
+
+  /* ---------- Write: qty / price / dot ---------- */
 
   async adjustDotQuantity(
     storeId: string,
@@ -402,28 +539,55 @@ export const InventoryService = {
   ): Promise<void> {
     const dotRef = doc(
       db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants', variantId,
-      'dots', dotCode
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants',
+      variantId,
+      'dots',
+      dotCode
     );
-
-    const exists = await getDoc(dotRef);
-    if (!exists.exists()) {
-      await setDoc(
-        dotRef,
-        stripUndefinedDeep({
-          qty: 0,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      );
-    }
-
+    const snap = await getDoc(dotRef);
+    if (!snap.exists()) throw new Error(`DOT ${dotCode} not found`);
     await updateDoc(dotRef, {
       qty: increment(qtyChange),
+      updatedAt: serverTimestamp(),
+    });
+  },
+
+  /** ✅ เวอร์ชันใหม่: args 5 ตัว + payload object */
+  async addNewDot(
+    storeId: string,
+    brandId: string,
+    modelId: string,
+    variantId: string,
+    payload: { dotCode: string; qty: number; promoPrice?: number }
+  ): Promise<void> {
+    const vRef = doc(
+      db,
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants',
+      variantId
+    );
+    const vSnap = await getDoc(vRef);
+    if (!vSnap.exists()) throw new Error(`Variant ${variantId} not found`);
+
+    const dRef = doc(vRef, 'dots', payload.dotCode);
+    const dSnap = await getDoc(dRef);
+    if (dSnap.exists()) throw new Error(`DOT ${payload.dotCode} already exists`);
+
+    await setDoc(dRef, {
+      qty: Math.max(0, Number(payload.qty) || 0),
+      promoPrice: payload.promoPrice ?? null,
+      createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
   },
@@ -436,64 +600,25 @@ export const InventoryService = {
     dotCode: string,
     promoPrice: number | null
   ): Promise<void> {
-    const dotRef = doc(
+    const dRef = doc(
       db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants', variantId,
-      'dots', dotCode
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants',
+      variantId,
+      'dots',
+      dotCode
     );
-
-    const dotDoc = await getDoc(dotRef);
-    if (!dotDoc.exists()) {
-      throw new Error(`DOT ${dotCode} not found`);
-    }
-
-    const updateData: any = { updatedAt: serverTimestamp() };
-    updateData.promoPrice = promoPrice !== null ? promoPrice : null;
-
-    await updateDoc(dotRef, updateData);
-  },
-
-  async addNewDot(
-    storeId: string,
-    brandId: string,
-    modelId: string,
-    variantId: string,
-    dotCode: string,
-    qty: number,
-    promoPrice?: number
-  ): Promise<void> {
-    const variantRef = doc(
-      db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants', variantId
-    );
-
-    const variantDoc = await getDoc(variantRef);
-    if (!variantDoc.exists()) {
-      throw new Error(`Variant ${variantId} not found`);
-    }
-
-    const dotRef = doc(variantRef, 'dots', dotCode);
-    const existingDot = await getDoc(dotRef);
-    if (existingDot.exists()) {
-      throw new Error(`DOT ${dotCode} already exists`);
-    }
-
-    const dotData: any = {
-      qty: Math.max(0, qty),
-      createdAt: serverTimestamp(),
+    const d = await getDoc(dRef);
+    if (!d.exists()) throw new Error(`DOT ${dotCode} not found`);
+    await updateDoc(dRef, {
+      promoPrice: promoPrice ?? null,
       updatedAt: serverTimestamp(),
-    };
-    if (promoPrice !== undefined && promoPrice !== null) {
-      dotData.promoPrice = promoPrice;
-    }
-
-    await setDoc(dotRef, stripUndefinedDeep(dotData));
+    });
   },
 
   async deleteDot(
@@ -503,215 +628,122 @@ export const InventoryService = {
     variantId: string,
     dotCode: string
   ): Promise<void> {
-    const dotRef = doc(
+    const dRef = doc(
       db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants', variantId,
-      'dots', dotCode
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants',
+      variantId,
+      'dots',
+      dotCode
     );
-
-    const dotDoc = await getDoc(dotRef);
-    if (!dotDoc.exists()) {
-      throw new Error(`DOT ${dotCode} not found`);
-    }
-    await deleteDoc(dotRef);
+    const d = await getDoc(dRef);
+    if (!d.exists()) throw new Error(`DOT ${dotCode} not found`);
+    await deleteDoc(dRef);
   },
 
-  async getVariantsForProduct(
+  /** เปลี่ยนชื่อที่แสดง (ไม่เปลี่ยน id) */
+  async updateProductMeta(
+    storeId: string,
+    brandId: string,
+    modelId: string,
+    updates: { brandName?: string; modelName?: string }
+  ): Promise<void> {
+    if (updates.brandName) {
+      const bRef = doc(db, 'stores', storeId, 'inventory', brandId);
+      await updateDoc(bRef, {
+        brandName: updates.brandName,
+        updatedAt: serverTimestamp(),
+      });
+    }
+    if (updates.modelName) {
+      const mRef = doc(db, 'stores', storeId, 'inventory', brandId, 'models', modelId);
+      await updateDoc(mRef, {
+        modelName: updates.modelName,
+        updatedAt: serverTimestamp(),
+      });
+    }
+  },
+
+  /* ---------- (Optional) Aliases / helper สำหรับโค้ดเก่า ---------- */
+
+  /** alias ของ getVariantsForProduct เพื่อเคสคอมโพเนนต์เก่าที่ยังเรียกชื่อนี้ */
+  async listVariantsFull(
     storeId: string,
     brandId: string,
     modelId: string
-  ): Promise<Array<{ variantId: string; specification: string }>> {
-    const variantsRef = collection(
-      db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants'
-    );
-
-    const variantsSnap = await getDocs(variantsRef);
-    return variantsSnap.docs.map((d) => {
-      const data = d.data();
-      const size = data.size || '';
-      const loadIndex = data.loadIndex || '';
-      const specification = loadIndex ? `${size} (${loadIndex})` : size;
-      return { variantId: d.id, specification };
-    });
+  ): Promise<Array<{ variantId: string; specification: string; basePrice?: number }>> {
+    return this.getVariantsForProduct(storeId, brandId, modelId);
   },
 
-  parseProductInfo(product: GroupedProduct, branchId: string, variantId: string, dotCode: string) {
-    const parts = product.id.split('-');
-    const brandId = parts[0] || slugifyId(product.brand);
-    const modelId = parts.slice(1).join('-') || slugifyId(product.model || 'unknown');
-    return { storeId: branchId, brandId, modelId, variantId, dotCode };
-  },
-
-  async createStockMovement(
+  /** list DOTs (ทั้งหมดของ model หรือเจาะ variantId ถ้าส่งมา) */
+  async listDots(
     storeId: string,
-    target: { brand: string; model?: string; variantId: string; dotCode: string },
-    type: StockMovementType,
-    qtyChange: number,
-    meta?: { reason?: string; brandId?: string; modelId?: string }
-  ): Promise<void> {
-    const brandId = meta?.brandId ?? slugifyId(target.brand);
-    const modelId = meta?.modelId ?? slugifyId(target.model || 'unknown');
-
-    await this.adjustDotQuantity(storeId, brandId, modelId, target.variantId, target.dotCode, qtyChange);
-
-    try {
-      const movementData: any = {
-        branchId: storeId,
-        brand: target.brand,
-        model: target.model || '',
-        variantId: target.variantId,
-        dotCode: target.dotCode,
-        qtyChange,
-        type,
-        reason: meta?.reason,
-        createdAt: serverTimestamp(),
-      };
-      await addDoc(collection(db, 'stockMovements'), stripUndefinedDeep(movementData));
-    } catch (e) {
-      console.warn('Failed to log stock movement:', e);
-    }
-  },
-
-  async findProductByBrandModel(brand: string, model?: string): Promise<string | null> {
-    try {
-      const brandId = slugifyId(brand);
-      const modelId = slugifyId(model || 'unknown');
-      return `${brandId}-${modelId}`;
-    } catch {
-      return null;
-    }
-  },
-
-  async ensureProduct(brand: string, model: string): Promise<string> {
-    const brandId = slugifyId(brand);
-    const modelId = slugifyId(model);
-    return `${brandId}-${modelId}`;
-  },
-
-  async upsertDot(
-    branchId: string,
-    payload: {
-      brand: string;
-      model?: string;
+    brandId: string,
+    modelId: string,
+    variantId?: string
+  ): Promise<
+    Array<{
       variantId: string;
       dotCode: string;
       qty: number;
-      promoPrice?: number;
-    }
-  ): Promise<void> {
-    const brandId = slugifyId(payload.brand);
-    const modelId = slugifyId(payload.model || 'unknown');
-
-    try {
-      await this.updateDotQuantity(branchId, brandId, modelId, payload.variantId, payload.dotCode, payload.qty);
-      if (payload.promoPrice !== undefined) {
-        await this.setPromoPrice(branchId, brandId, modelId, payload.variantId, payload.dotCode, payload.promoPrice);
-      }
-    } catch (error: any) {
-      if (String(error?.message || '').includes('not found')) {
-        await this.addNewDot(branchId, brandId, modelId, payload.variantId, payload.dotCode, payload.qty, payload.promoPrice);
-      } else {
-        throw error;
-      }
-    }
-  },
-
-  /** สร้าง/อัปเซิร์ต path ปลายทาง (brand/model/variant) ก่อนรับของ */
-  async ensureVariantPath(
-    storeId: string,
-    brandId: string,
-    modelId: string,
-    variantId: string,
-    specification?: string,
-    basePrice?: number
-  ): Promise<void> {
-    const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
-    const brandDoc = await getDoc(brandRef);
-    if (!brandDoc.exists()) {
-      await setDoc(
-        brandRef,
-        stripUndefinedDeep({
-          brandName: brandId,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      );
-    }
-
-    const modelRef = doc(brandRef, 'models', modelId);
-    const modelDoc = await getDoc(modelRef);
-    if (!modelDoc.exists()) {
-      await setDoc(
-        modelRef,
-        stripUndefinedDeep({
-          modelName: modelId,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      );
-    }
-
-    const variantRef = doc(modelRef, 'variants', variantId);
-    const varDoc = await getDoc(variantRef);
-    if (!varDoc.exists()) {
-      const parsed = parseSpec(specification || '');
-      await setDoc(
-        variantRef,
-        stripUndefinedDeep({
-          size: parsed.size || specification || '',
-          loadIndex: parsed.loadIndex || '',
-          basePrice: basePrice ?? 0,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      );
-    }
-  },
-
-  async ensureDotDoc(
-    storeId: string,
-    brandId: string,
-    modelId: string,
-    variantId: string,
-    dotCode: string
-  ): Promise<void> {
-    const dotRef = doc(
+      promoPrice?: number | null;
+      basePrice?: number;
+      specification: string;
+    }>
+  > {
+    const vCol = collection(
       db,
-      'stores', storeId,
-      'inventory', brandId,
-      'models', modelId,
-      'variants', variantId,
-      'dots', dotCode
+      'stores',
+      storeId,
+      'inventory',
+      brandId,
+      'models',
+      modelId,
+      'variants'
     );
-    const dotDoc = await getDoc(dotRef);
-    if (!dotDoc.exists()) {
-      await setDoc(
-        dotRef,
-        stripUndefinedDeep({
-          qty: 0,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        }),
-        { merge: true }
-      );
+    const vSnap = variantId ? { docs: [await getDoc(doc(vCol, variantId))] } : await getDocs(vCol);
+
+    const out: Array<{
+      variantId: string;
+      dotCode: string;
+      qty: number;
+      promoPrice?: number | null;
+      basePrice?: number;
+      specification: string;
+    }> = [];
+
+    for (const vDoc of vSnap.docs) {
+      if (!vDoc || !vDoc.exists()) continue;
+      const vData = vDoc.data() as any;
+      const spec = specFromVariant(vData);
+      const basePrice = vData.basePrice ?? undefined;
+
+      const dCol = collection(vDoc.ref, 'dots');
+      const dSnap = await getDocs(dCol);
+      for (const d of dSnap.docs) {
+        const dd = d.data() as any;
+        out.push({
+          variantId: vDoc.id,
+          dotCode: d.id,
+          qty: Number(dd.qty || 0),
+          promoPrice: dd.promoPrice ?? null,
+          basePrice,
+          specification: spec,
+        });
+      }
     }
+    return out;
   },
 };
 
 /* =========================
  * Order Service
- * ========================= */
-
+ * =======================*/
 export const OrderService = {
   async createOrder(payload: {
     buyerBranchId: string;
@@ -720,120 +752,35 @@ export const OrderService = {
     sellerBranchName: string;
     items: OrderItem[];
     totalAmount: number;
-    status: OrderStatus;
+    status: OrderStatus; // usually 'requested'
     notes?: string;
   }): Promise<string> {
-    const orderData = stripUndefinedDeep({
+    const orderData = {
       ...payload,
       orderNumber: `TR-${Date.now().toString().slice(-6)}`,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
-    });
-    const docRef = await addDoc(collection(db, 'orders'), orderData);
-    return docRef.id;
+    };
+    const ref = await addDoc(collection(db, 'orders'), orderData);
+    return ref.id;
   },
 
-  /** where + sort ใน JS เพื่อลด requirement composite index */
   async getOrdersByBranch(branchId: string, role: 'buyer' | 'seller'): Promise<Order[]> {
     const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
-    const q1 = query(collection(db, 'orders'), where(field, '==', branchId));
-    const snap = await getDocs(q1);
-    const orders = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Order[];
-    orders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
-    return orders;
-  },
-
-  async approveTransfer(orderId: string): Promise<void> {
-    const ref = doc(db, 'orders', orderId);
-    await updateDoc(ref, { status: 'confirmed', updatedAt: serverTimestamp() });
-  },
-
-  async rejectTransfer(orderId: string, reason?: string): Promise<void> {
-    const ref = doc(db, 'orders', orderId);
-    await updateDoc(ref, {
-      status: 'cancelled',
-      cancelReason: reason || null,
-      updatedAt: serverTimestamp(),
-    });
-  },
-
-  /** ผู้รับ (buyer) กดรับของ => โยกสต็อก + ปิดเป็น delivered */
-  async receiveTransfer(orderId: string): Promise<void> {
-    const orderRef = doc(db, 'orders', orderId);
-    const ds = await getDoc(orderRef);
-    if (!ds.exists()) throw new Error('Order not found');
-
-    const order = ds.data() as Order;
-    if (order.status === 'cancelled') throw new Error('Order already cancelled');
-    if (order.status === 'delivered') return;
-
-    for (const item of order.items) {
-      const { brandId, modelId } = splitProductId(item.productId);
-      const { specification, variantId, dotCode, quantity } = item;
-
-      // ตัดสต็อกจาก seller
-      try {
-        await InventoryService.adjustDotQuantity(
-          order.sellerBranchId,
-          brandId,
-          modelId,
-          variantId,
-          dotCode,
-          -Math.abs(quantity)
-        );
-        await InventoryService.createStockMovement(
-          order.sellerBranchId,
-          { brand: brandId, model: modelId, variantId, dotCode },
-          'transfer_out',
-          -Math.abs(quantity),
-          { brandId, modelId, reason: `To ${order.buyerBranchName}` }
-        );
-      } catch (e) {
-        console.warn('Seller adjust failed:', e);
-      }
-
-      // เติมเข้าที่ buyer (ensure path ก่อน)
-      try {
-        await InventoryService.ensureVariantPath(
-          order.buyerBranchId,
-          brandId,
-          modelId,
-          variantId,
-          specification,
-          item.unitPrice
-        );
-        await InventoryService.ensureDotDoc(
-          order.buyerBranchId,
-          brandId,
-          modelId,
-          variantId,
-          dotCode
-        );
-
-        await InventoryService.adjustDotQuantity(
-          order.buyerBranchId,
-          brandId,
-          modelId,
-          variantId,
-          dotCode,
-          Math.abs(quantity)
-        );
-        await InventoryService.createStockMovement(
-          order.buyerBranchId,
-          { brand: brandId, model: modelId, variantId, dotCode },
-          'transfer_in',
-          Math.abs(quantity),
-          { brandId, modelId, reason: `From ${order.sellerBranchName}` }
-        );
-      } catch (e) {
-        console.warn('Buyer adjust failed:', e);
-      }
+    try {
+      const q = query(collection(db, 'orders'), where(field, '==', branchId));
+      const snap = await getDocs(q);
+      const orders = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Order[];
+      orders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      return orders;
+    } catch {
+      const all = await getDocs(collection(db, 'orders'));
+      const orders = all.docs
+        .map((d) => ({ id: d.id, ...(d.data() as any) } as Order))
+        .filter((o) => (o as any)[field] === branchId);
+      orders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
+      return orders;
     }
-
-    await updateDoc(orderRef, {
-      status: 'delivered',
-      updatedAt: serverTimestamp(),
-    });
   },
 
   onOrdersByBranch(
@@ -842,188 +789,70 @@ export const OrderService = {
     callback: (orders: Order[]) => void
   ) {
     const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
-    const q1 = query(collection(db, 'orders'), where(field, '==', branchId));
-
+    const q = query(collection(db, 'orders'), where(field, '==', branchId));
     return onSnapshot(
-      q1,
+      q,
       (snap) => {
         const orders = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) })) as Order[];
         orders.sort((a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0));
         callback(orders);
       },
-      (error) => {
-        console.error('Realtime orders error:', error);
-        OrderService.getOrdersByBranch(branchId, role)
-          .then(callback)
-          .catch(() => callback([]));
+      async () => {
+        const fallback = await OrderService.getOrdersByBranch(branchId, role);
+        callback(fallback);
       }
     );
   },
 
-  /** Legacy alias เพื่อกันโค้ดเก่าพัง */
-  async deliverTransfer(orderId: string) {
-    return this.receiveTransfer(orderId);
+  // Actions
+  async approveTransfer(orderId: string): Promise<void> {
+    const ref = doc(db, 'orders', orderId);
+    await updateDoc(ref, { status: 'approved', updatedAt: serverTimestamp() });
+  },
+
+  async rejectTransfer(orderId: string, reason?: string): Promise<void> {
+    const ref = doc(db, 'orders', orderId);
+    await updateDoc(ref, {
+      status: 'rejected',
+      cancelReason: reason ?? null,
+      updatedAt: serverTimestamp(),
+    });
+  },
+
+  async shipTransfer(orderId: string): Promise<void> {
+    const ref = doc(db, 'orders', orderId);
+    await updateDoc(ref, { status: 'shipped', updatedAt: serverTimestamp() });
+  },
+
+  /** alias เดิมบางที่เรียก deliverTransfer -> เทียบเท่า shipped/received */
+  async deliverTransfer(orderId: string): Promise<void> {
+    // เลือก mark เป็น 'shipped' (หรือจะเปลี่ยนเป็น 'received' ก็ได้ตาม flow)
+    return this.shipTransfer(orderId);
+  },
+
+  async receiveTransfer(orderId: string): Promise<void> {
+    const ref = doc(db, 'orders', orderId);
+    await updateDoc(ref, { status: 'received', updatedAt: serverTimestamp() });
+  },
+
+  async cancelTransfer(orderId: string, reason?: string): Promise<void> {
+    const ref = doc(db, 'orders', orderId);
+    await updateDoc(ref, {
+      status: 'cancelled',
+      cancelReason: reason ?? null,
+      updatedAt: serverTimestamp(),
+    });
   },
 };
 
 /* =========================
- * Compat shims (เดิมบางไฟล์เรียกตรง)
- * ========================= */
-export async function approveOrderTx(orderId: string) {
-  return OrderService.approveTransfer(orderId);
-}
-export async function receiveOrderTx(orderId: string) {
-  return OrderService.receiveTransfer(orderId);
-}
-export async function rejectOrderTx(orderId: string, reason?: string) {
-  return OrderService.rejectTransfer(orderId, reason);
-}
-
-/* =========================
- * Legacy helper export
- * ========================= */
-export async function findProductIdByBrandModel(brand: string, model?: string): Promise<string | null> {
-  try {
-    const brandId = slugifyId(brand);
-    const modelId = slugifyId(model || 'unknown');
-    return `${brandId}-${modelId}`;
-  } catch {
-    return null;
-  }
-}
-
-/* =========================
- * Test Utilities
- * ========================= */
-
-export const InventoryTestUtils = {
-  async testConnection(storeId: string): Promise<boolean> {
-    try {
-      const testRef = doc(db, 'stores', storeId, 'test', 'connection');
-      await setDoc(testRef, {
-        message: 'Connection test',
-        timestamp: serverTimestamp(),
-      });
-      const testDoc = await getDoc(testRef);
-      const ok = testDoc.exists();
-      if (ok) await deleteDoc(testRef);
-      return ok;
-    } catch (error) {
-      console.error('Connection test failed:', error);
-      return false;
-    }
-  },
-
-  async countInventoryItems(storeId: string): Promise<{
-    brands: number;
-    models: number;
-    variants: number;
-    dots: number;
-    totalQty: number;
-  }> {
-    try {
-      const inventoryRef = collection(db, 'stores', storeId, 'inventory');
-      const brandsSnap = await getDocs(inventoryRef);
-
-      let brands = 0, models = 0, variants = 0, dots = 0, totalQty = 0;
-
-      for (const brandDoc of brandsSnap.docs) {
-        brands++;
-        const modelsRef = collection(brandDoc.ref, 'models');
-        const modelsSnap = await getDocs(modelsRef);
-        for (const modelDoc of modelsSnap.docs) {
-          models++;
-          const variantsRef = collection(modelDoc.ref, 'variants');
-          const variantsSnap = await getDocs(variantsRef);
-          for (const variantDoc of variantsSnap.docs) {
-            variants++;
-            const dotsRef = collection(variantDoc.ref, 'dots');
-            const dotsSnap = await getDocs(dotsRef);
-            for (const dotDoc of dotsSnap.docs) {
-              dots++;
-              const dotData = dotDoc.data();
-              totalQty += Number(dotData.qty || 0);
-            }
-          }
-        }
-      }
-
-      return { brands, models, variants, dots, totalQty };
-    } catch (error) {
-      console.error('Error counting inventory:', error);
-      return { brands: 0, models: 0, variants: 0, dots: 0, totalQty: 0 };
-    }
-  },
-
-  async getInventorySummary(storeId: string): Promise<Array<{
-    brand: string;
-    model: string;
-    variants: number;
-    totalQty: number;
-    totalDots: number;
-  }>> {
-    try {
-      const summary: Array<{ brand: string; model: string; variants: number; totalQty: number; totalDots: number; }> = [];
-
-      const inventoryRef = collection(db, 'stores', storeId, 'inventory');
-      const brandsSnap = await getDocs(inventoryRef);
-
-      for (const brandDoc of brandsSnap.docs) {
-        const brandData = brandDoc.data();
-        const brandName = brandData.brandName || brandDoc.id;
-
-        const modelsRef = collection(brandDoc.ref, 'models');
-        const modelsSnap = await getDocs(modelsRef);
-
-        for (const modelDoc of modelsSnap.docs) {
-          const modelData = modelDoc.data();
-          const modelName = modelData.modelName || modelDoc.id;
-
-          let variants = 0, totalQty = 0, totalDots = 0;
-
-          const variantsRef = collection(modelDoc.ref, 'variants');
-          const variantsSnap = await getDocs(variantsRef);
-
-          for (const variantDoc of variantsSnap.docs) {
-            variants++;
-            const dotsRef = collection(variantDoc.ref, 'dots');
-            const dotsSnap = await getDocs(dotsRef);
-            for (const dotDoc of dotsSnap.docs) {
-              totalDots++;
-              const dotData = dotDoc.data();
-              totalQty += Number(dotData.qty || 0);
-            }
-          }
-
-          if (variants > 0) {
-            summary.push({ brand: brandName, model: modelName, variants, totalQty, totalDots });
-          }
-        }
-      }
-
-      return summary.sort((a, b) => b.totalQty - a.totalQty);
-    } catch (error) {
-      console.error('Error getting inventory summary:', error);
-      return [];
-    }
-  },
-};
-
-/* =========================
- * Default aggregate export
- * ========================= */
+ * Export default (สะดวก import เดียว)
+ * =======================*/
 export default {
   StoreService,
   InventoryService,
   OrderService,
-  InventoryTestUtils,
-  // Helpers
+  // utils
   slugifyId,
   ensureArray,
-  stripUndefinedDeep,
-  findProductIdByBrandModel,
-  // Compat
-  approveOrderTx,
-  receiveOrderTx,
-  rejectOrderTx,
 };

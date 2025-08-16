@@ -1,11 +1,10 @@
+// src/app/components/BranchNewView.tsx
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
-  slugifyId,
   StoreService,
-  InventoryTestUtils,
   type StoreDoc,
 } from '@/lib/services/InventoryService';
 
@@ -18,7 +17,6 @@ import {
   MapPin,
   XCircle,
   ExternalLink,
-  TestTube2,
 } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
@@ -30,7 +28,16 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
 
-/* ---------- helpers ---------- */
+/* ---------- local helpers ---------- */
+function slugifyId(s: string) {
+  return s
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 60);
+}
+
 type Avail = 'idle' | 'checking' | 'ok' | 'taken';
 
 function useDebounced<T>(value: T, delay = 300) {
@@ -97,7 +104,6 @@ export default function BranchNewView() {
   // State
   const [checking, setChecking] = useState<Avail>('idle');
   const [submitting, setSubmitting] = useState(false);
-  const [testing, setTesting] = useState(false);
 
   // auto-slug id จากชื่อ (ถ้า user ยังไม่แก้เอง)
   useEffect(() => {
@@ -191,24 +197,6 @@ export default function BranchNewView() {
       `${lat},${lng}`
     )}`;
     window.open(url, '_blank', 'noopener,noreferrer');
-  }
-
-  async function testWrite() {
-    if (!branchId.trim()) {
-      toast.error('กรุณากรอก Branch ID ก่อน');
-      return;
-    }
-    setTesting(true);
-    try {
-      const ok = await InventoryTestUtils.testConnection(branchId.trim());
-      toast[ok ? 'success' : 'error'](
-        ok ? 'Test write OK' : 'Test write failed'
-      );
-    } catch (e: any) {
-      toast.error('Test write failed', { description: e?.message || String(e) });
-    } finally {
-      setTesting(false);
-    }
   }
 
   async function submit(redirectTo?: string) {
@@ -580,26 +568,6 @@ export default function BranchNewView() {
 
           {/* Actions */}
           <div className="flex flex-wrap justify-end gap-2 pt-2">
-            <Button
-              variant="outline"
-              type="button"
-              onClick={testWrite}
-              disabled={testing}
-              title="ทดสอบเขียน/อ่าน Firestore"
-            >
-              {testing ? (
-                <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                  Testing…
-                </>
-              ) : (
-                <>
-                  <TestTube2 className="mr-2 h-4 w-4" />
-                  Test Firestore write
-                </>
-              )}
-            </Button>
-
             <Button variant="outline" type="button" onClick={clearForm}>
               Clear
             </Button>
