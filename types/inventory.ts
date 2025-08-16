@@ -43,10 +43,10 @@ export type OrderItem = {
 export type OrderStatus =
   | 'requested'
   | 'confirmed'
+  | 'shipped' // เพิ่มสถานะ "จัดส่งแล้ว"
   | 'rejected'
   | 'cancelled'
-  | 'completed';
-
+  | 'completed'; // เพิ่มสถานะ "รับของแล้ว"
 export type Order = {
   id: string;
   orderNumber?: string;

@@ -1,10 +1,11 @@
-// src/app/layout.tsx - Simple Fix Version
+// src/app/layout.tsx - with Sonner Toaster
 import "./globals.css";
 import { ThemeProvider } from "@/components/theme-provider";
 import QueryProvider from "@/src/app/components/QueryProvider";
 import { BranchProvider } from "@/contexts/BranchContext";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import AppSidebar from "@/src/app/components/AppSidebar";
+import { Toaster } from "sonner"; // <-- เพิ่มตรงนี้
 
 export const metadata = {
   title: "Tire Network",
@@ -21,7 +22,6 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <SidebarProvider>
                 <div className="flex min-h-screen">
                   <AppSidebar />
-                  {/* ใช้โครงสร้างเดิม แต่เพิ่ม max-width กับเนื้อหา */}
                   <main className="flex-1 overflow-x-hidden min-w-0">
                     <div className="w-full max-w-none px-4 py-6 sm:px-6 lg:px-8">
                       {children}
@@ -31,6 +31,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               </SidebarProvider>
             </BranchProvider>
           </QueryProvider>
+
+          {/* Toaster global สำหรับ sonner */}
+          <Toaster richColors position="top-right" />
         </ThemeProvider>
       </body>
     </html>

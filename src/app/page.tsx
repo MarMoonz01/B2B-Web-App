@@ -16,16 +16,11 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
-type ViewKey =
-  | 'inventory'
-  | 'transfer_platform'
-  | 'transfer_requests'
-  | 'dashboard'
-  | 'network'
-  | 'debug';
+// ใช้ type เดียวกับ /types/nav.ts
+import type { ViewKey } from '@/types/nav';
 
 function isViewKey(v: string | null): v is ViewKey {
-  return !!v && ['inventory','transfer_platform','transfer_requests','dashboard','network','debug'].includes(v);
+  return !!v && ['inventory','transfer_platform','transfer_requests','dashboard','network','analytics','debug'].includes(v);
 }
 
 export default function Page() {
@@ -179,10 +174,11 @@ export default function Page() {
     case 'transfer_requests':
       return <TransferRequestsView myBranchId={myBranchId} />;
     case 'dashboard':
+    case 'analytics':
       return (
         <Card>
           <CardHeader>
-            <CardTitle>Dashboard (placeholder)</CardTitle>
+            <CardTitle>Analytics Dashboard (placeholder)</CardTitle>
           </CardHeader>
           <CardContent>ใส่กราฟหรือ KPI รวมที่ต้องการในภายหลังได้ที่นี่</CardContent>
         </Card>

@@ -22,9 +22,17 @@ type BranchContextType = {
   branches: Branch[];
   loading: boolean;
   error: string | null;
+
+  /** ของเดิม */
   selectedBranchId: string | null;
   selectedBranch: Branch | null;
   setSelectedBranchId: (id: string) => void;
+
+  /** เพิ่ม alias เพื่อความเข้ากันได้ย้อนหลัง */
+  activeBranchId: string | null;
+  activeBranchName: string;
+  setActiveBranch: (id: string, name?: string) => void;
+
   refreshKey: number;
 };
 
@@ -39,16 +47,10 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
   const [selectedBranchId, setSelectedBranchIdState] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
 
-  // โหลดสาขาแบบ realtime จาก Firestore
   useEffect(() => {
-    console.log('🔥 BranchProvider: Setting up Firestore listener...');
-    
     const unsub = onSnapshot(
-      collection(db, 'stores'), 
+      collection(db, 'stores'),
       (snap) => {
-        console.log('🔥 BranchProvider: Received Firestore update');
-        console.log('📋 Raw documents:', snap.docs.map(d => ({ id: d.id, data: d.data() })));
-        
         const list: Branch[] = snap.docs.map((d) => {
           const data = d.data() as any;
           return {
@@ -60,40 +62,28 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
           };
         });
 
-        console.log('🏪 Processed branches:', list);
         setBranches(list);
         setLoading(false);
         setError(null);
 
-        // ตั้งค่าเริ่มต้นให้ selectedBranchId หากยังไม่มี
         if (!selectedBranchId && list.length > 0) {
           const saved = typeof window !== 'undefined' ? localStorage.getItem(LS_KEY) : null;
           const validSaved = saved && list.find((b) => b.id === saved) ? saved : null;
           const pick = validSaved ?? list[0]?.id ?? null;
-          
-          console.log('🎯 Auto-selecting branch:', pick);
           if (pick) setSelectedBranchIdState(pick);
         }
       },
       (err) => {
-        console.error('❌ BranchProvider: Firestore error:', err);
         setError(err.message);
         setLoading(false);
       }
     );
-
-    return () => {
-      console.log('🔥 BranchProvider: Cleaning up Firestore listener');
-      unsub();
-    };
+    return () => unsub();
   }, [selectedBranchId]);
 
   const setSelectedBranchId = (id: string) => {
-    console.log('🎯 BranchProvider: Selecting branch:', id);
     setSelectedBranchIdState(id);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem(LS_KEY, id);
-    }
+    if (typeof window !== 'undefined') localStorage.setItem(LS_KEY, id);
     setRefreshKey((k) => k + 1);
   };
 
@@ -102,6 +92,11 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
     [branches, selectedBranchId]
   );
 
+  // ===== Aliases เพื่อความเข้ากันได้ย้อนหลัง =====
+  const activeBranchId = selectedBranchId;
+  const activeBranchName = selectedBranch?.branchName ?? (selectedBranchId ?? '');
+  const setActiveBranch = (id: string, _name?: string) => setSelectedBranchId(id);
+
   const value: BranchContextType = {
     branches,
     loading,
@@ -109,6 +104,12 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
     selectedBranchId,
     selectedBranch,
     setSelectedBranchId,
+
+    // aliases
+    activeBranchId,
+    activeBranchName,
+    setActiveBranch,
+
     refreshKey,
   };
 
@@ -119,8 +120,6 @@ export function BranchProvider({ children }: { children: React.ReactNode }) {
 
 export function useBranch() {
   const ctx = useContext(BranchContext);
-  if (!ctx) {
-    throw new Error('useBranch must be used within BranchProvider');
-  }
+  if (!ctx) throw new Error('useBranch must be used within BranchProvider');
   return ctx;
 }
