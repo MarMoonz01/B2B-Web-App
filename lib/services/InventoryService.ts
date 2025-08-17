@@ -14,6 +14,7 @@ import {
   Timestamp,
   updateDoc,
   where,
+  runTransaction,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
@@ -36,7 +37,6 @@ export type Variant = {
   loadIndex?: string;
   basePrice?: number;
   updatedAt?: any;
-  // convenience (บางหน้าอยากได้สตริงรวม)
   specification?: string;
 };
 
@@ -140,9 +140,9 @@ export type Order = {
 export type StoreDoc = {
   branchName: string;
   isActive?: boolean;
-  phone?: string;
-  email?: string;
-  lineId?: string;
+  phone?: string | null;
+  email?: string | null;
+  lineId?: string | null;
   address?: {
     line1?: string;
     line2?: string;
@@ -157,7 +157,7 @@ export type StoreDoc = {
   };
   services?: string[];
   hours?: Record<string, { open: string; close: string; closed: boolean }>;
-  notes?: string;
+  notes?: string | null;
   orgId?: string;
   createdAt?: any;
   updatedAt?: any;
@@ -187,6 +187,57 @@ function specFromVariant(v: { size?: string; loadIndex?: string } | null | undef
   return size && li ? `${size} (${li})` : (size || li || '');
 }
 
+/**
+ * Canonical rules:
+ *  - Brand IDs: UPPERCASE (เช่น MICHELIN)
+ *  - Model IDs: slug (lowercase-with-dash)
+ * ฟังก์ชัน resolve* จะพยายามหา doc ที่มีอยู่จริงก่อน (ทั้ง exact/upper/slug/lower)
+ * ถ้าไม่เจอ จะคืนค่าตามกติกาข้างบน
+ */
+async function resolveBrandId(storeId: string, brandIdOrName: string): Promise<string> {
+  const candidates = [
+    brandIdOrName,
+    brandIdOrName.toUpperCase(),
+    slugifyId(brandIdOrName),
+    brandIdOrName.toLowerCase(),
+  ];
+  for (const b of candidates) {
+    const snap = await getDoc(doc(db, 'stores', storeId, 'inventory', b));
+    if (snap.exists()) return b;
+  }
+  return brandIdOrName.toUpperCase();
+}
+
+async function resolveModelId(
+  storeId: string,
+  brandIdResolved: string,
+  modelIdOrName: string
+): Promise<string> {
+  const base = doc(db, 'stores', storeId, 'inventory', brandIdResolved);
+  const candidates = [
+    modelIdOrName,
+    slugifyId(modelIdOrName),
+    modelIdOrName.toUpperCase(),
+    modelIdOrName.toLowerCase(),
+  ];
+  for (const m of candidates) {
+    const snap = await getDoc(doc(base, 'models', m));
+    if (snap.exists()) return m;
+  }
+  return slugifyId(modelIdOrName);
+}
+
+/** รวม brand+model canonicalization สำหรับ OrderService */
+async function resolveCanonicalIds(
+  storeId: string,
+  brandIdRaw: string,
+  modelIdRaw: string
+): Promise<{ brandId: string; modelId: string }> {
+  const brandId = await resolveBrandId(storeId, brandIdRaw);
+  const modelId = await resolveModelId(storeId, brandId, modelIdRaw);
+  return { brandId, modelId };
+}
+
 /* =========================
  * Store Service
  * =======================*/
@@ -211,7 +262,6 @@ export const StoreService = {
     const ref = doc(db, 'stores', storeId);
     await setDoc(ref, {
       ...payload,
-      // ป้องกัน undefined ใส่เป็น null ดีกว่า
       phone: payload.phone ?? null,
       email: payload.email ?? null,
       lineId: payload.lineId ?? null,
@@ -242,13 +292,12 @@ export const StoreService = {
 
 /* =========================
  * Inventory Service
- *  - API ที่หน้า UI ใช้จริง + alias บางตัว
  * =======================*/
 export const InventoryService = {
-  /* ---------- Ensure helpers (เบา ๆ เพื่อใช้ตอนสร้าง/แก้ไข) ---------- */
+  /* ---------- Ensure helpers (ใช้ canonical id) ---------- */
 
   async ensureBrandDoc(storeId: string, brandName: string): Promise<{ brandId: string }> {
-    const brandId = slugifyId(brandName);
+    const brandId = await resolveBrandId(storeId, brandName);
     const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
     const snap = await getDoc(brandRef);
     if (!snap.exists()) {
@@ -258,8 +307,7 @@ export const InventoryService = {
         updatedAt: serverTimestamp(),
       });
     } else {
-      // sync ชื่อให้ถูก (ถ้า UI แก้ชื่อ)
-      const cur = snap.data()?.brandName;
+      const cur = (snap.data() as any)?.brandName;
       if (cur !== brandName && brandName) {
         await updateDoc(brandRef, { brandName, updatedAt: serverTimestamp() });
       }
@@ -272,10 +320,9 @@ export const InventoryService = {
     brandIdOrName: string,
     modelName: string
   ): Promise<{ brandId: string; modelId: string }> {
-    const brandId = slugifyId(brandIdOrName);
+    const brandId = await resolveBrandId(storeId, brandIdOrName);
     const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
-    const b = await getDoc(brandRef);
-    if (!b.exists()) {
+    if (!(await getDoc(brandRef)).exists()) {
       await setDoc(brandRef, {
         brandName: brandIdOrName,
         createdAt: serverTimestamp(),
@@ -283,7 +330,7 @@ export const InventoryService = {
       });
     }
 
-    const modelId = slugifyId(modelName);
+    const modelId = await resolveModelId(storeId, brandId, modelName);
     const modelRef = doc(brandRef, 'models', modelId);
     const m = await getDoc(modelRef);
     if (!m.exists()) {
@@ -293,7 +340,7 @@ export const InventoryService = {
         updatedAt: serverTimestamp(),
       });
     } else {
-      const cur = m.data()?.modelName;
+      const cur = (m.data() as any)?.modelName;
       if (cur !== modelName && modelName) {
         await updateDoc(modelRef, { modelName, updatedAt: serverTimestamp() });
       }
@@ -301,7 +348,7 @@ export const InventoryService = {
     return { brandId, modelId };
   },
 
-  /** สร้าง variant ถ้ายังไม่มี (กรณี dialog สร้างสเปคใหม่) */
+  /** สร้าง variant ถ้ายังไม่มี (canonical path) */
   async ensureVariantPath(
     storeId: string,
     brandId: string,
@@ -309,14 +356,17 @@ export const InventoryService = {
     variantId: string,
     init?: { size?: string; loadIndex?: string; basePrice?: number }
   ): Promise<{ brandId: string; modelId: string; variantId: string }> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const vRef = doc(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants',
       variantId
     );
@@ -337,10 +387,10 @@ export const InventoryService = {
         updatedAt: serverTimestamp(),
       });
     }
-    return { brandId, modelId, variantId };
+    return { brandId: bId, modelId: mId, variantId };
   },
 
-  /** สร้าง dot ถ้ายังไม่มี (ใช้เวลาสร้าง/แก้ไขเฉพาะตัว) */
+  /** สร้าง dot ถ้ายังไม่มี (canonical path) */
   async ensureDotDoc(
     storeId: string,
     brandId: string,
@@ -349,14 +399,17 @@ export const InventoryService = {
     dotCode: string,
     init?: { qty?: number; promoPrice?: number | null }
   ): Promise<void> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const dRef = doc(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants',
       variantId,
       'dots',
@@ -392,7 +445,7 @@ export const InventoryService = {
     const products: GroupedProduct[] = [];
 
     for (const brandDoc of brandsSnap.docs) {
-      const brandId = brandDoc.id;
+      const brandId = brandDoc.id; // ใช้ id ที่มีอยู่จริงใน DB
       const brandData = brandDoc.data() as any;
       const brandName = brandData.brandName || brandId;
 
@@ -486,7 +539,7 @@ export const InventoryService = {
     return Array.from(productMap.values());
   },
 
-  /** แปลง GroupedProduct → path ids */
+  /** แปลง GroupedProduct → path ids (คืนค่า raw; ไป resolve ตอนใช้งานจริง) */
   parseProductInfo(
     product: GroupedProduct,
     branchId: string,
@@ -494,26 +547,28 @@ export const InventoryService = {
     dotCode: string
   ) {
     const parts = (product.id || '').split('-');
-    const brandId = parts[0] || slugifyId(product.brand);
-    const modelId = parts.slice(1).join('-') || slugifyId(product.model || 'unknown');
-
+    const brandId = parts[0] || product.brand || '';
+    const modelId = parts.slice(1).join('-') || (product.model || 'unknown');
     return { storeId: branchId, brandId, modelId, variantId, dotCode };
   },
 
-  /** รายการ variants (สำหรับ dropdown เลือก spec) */
+  /** รายการ variants (canonical) */
   async getVariantsForProduct(
     storeId: string,
     brandId: string,
     modelId: string
   ): Promise<Array<{ variantId: string; specification: string; basePrice?: number }>> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const vRef = collection(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants'
     );
     const vs = await getDocs(vRef);
@@ -527,7 +582,7 @@ export const InventoryService = {
     });
   },
 
-  /* ---------- Write: qty / price / dot ---------- */
+  /* ---------- Write: qty / price / dot (canonical) ---------- */
 
   async adjustDotQuantity(
     storeId: string,
@@ -537,14 +592,17 @@ export const InventoryService = {
     dotCode: string,
     qtyChange: number
   ): Promise<void> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const dotRef = doc(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants',
       variantId,
       'dots',
@@ -558,7 +616,6 @@ export const InventoryService = {
     });
   },
 
-  /** ✅ เวอร์ชันใหม่: args 5 ตัว + payload object */
   async addNewDot(
     storeId: string,
     brandId: string,
@@ -566,14 +623,17 @@ export const InventoryService = {
     variantId: string,
     payload: { dotCode: string; qty: number; promoPrice?: number }
   ): Promise<void> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const vRef = doc(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants',
       variantId
     );
@@ -600,14 +660,17 @@ export const InventoryService = {
     dotCode: string,
     promoPrice: number | null
   ): Promise<void> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const dRef = doc(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants',
       variantId,
       'dots',
@@ -628,14 +691,17 @@ export const InventoryService = {
     variantId: string,
     dotCode: string
   ): Promise<void> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const dRef = doc(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants',
       variantId,
       'dots',
@@ -653,31 +719,23 @@ export const InventoryService = {
     modelId: string,
     updates: { brandName?: string; modelName?: string }
   ): Promise<void> {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     if (updates.brandName) {
-      const bRef = doc(db, 'stores', storeId, 'inventory', brandId);
+      const bRef = doc(db, 'stores', storeId, 'inventory', bId);
       await updateDoc(bRef, {
         brandName: updates.brandName,
         updatedAt: serverTimestamp(),
       });
     }
     if (updates.modelName) {
-      const mRef = doc(db, 'stores', storeId, 'inventory', brandId, 'models', modelId);
+      const mRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId);
       await updateDoc(mRef, {
         modelName: updates.modelName,
         updatedAt: serverTimestamp(),
       });
     }
-  },
-
-  /* ---------- (Optional) Aliases / helper สำหรับโค้ดเก่า ---------- */
-
-  /** alias ของ getVariantsForProduct เพื่อเคสคอมโพเนนต์เก่าที่ยังเรียกชื่อนี้ */
-  async listVariantsFull(
-    storeId: string,
-    brandId: string,
-    modelId: string
-  ): Promise<Array<{ variantId: string; specification: string; basePrice?: number }>> {
-    return this.getVariantsForProduct(storeId, brandId, modelId);
   },
 
   /** list DOTs (ทั้งหมดของ model หรือเจาะ variantId ถ้าส่งมา) */
@@ -696,14 +754,17 @@ export const InventoryService = {
       specification: string;
     }>
   > {
+    const bId = await resolveBrandId(storeId, brandId);
+    const mId = await resolveModelId(storeId, bId, modelId);
+
     const vCol = collection(
       db,
       'stores',
       storeId,
       'inventory',
-      brandId,
+      bId,
       'models',
-      modelId,
+      mId,
       'variants'
     );
     const vSnap = variantId ? { docs: [await getDoc(doc(vCol, variantId))] } : await getDocs(vCol);
@@ -742,7 +803,7 @@ export const InventoryService = {
 };
 
 /* =========================
- * Order Service
+ * Order Service (Best-practice transfer flow) — canonical IDs
  * =======================*/
 export const OrderService = {
   async createOrder(payload: {
@@ -804,14 +865,33 @@ export const OrderService = {
     );
   },
 
-  // Actions
+  /* ---------- Status transitions ---------- */
   async approveTransfer(orderId: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error('Order not found');
+
+    const order = snap.data() as Order;
+    if (order.status !== 'requested' && order.status !== 'confirmed') {
+      throw new Error('Can only approve requested orders');
+    }
     await updateDoc(ref, { status: 'approved', updatedAt: serverTimestamp() });
   },
 
   async rejectTransfer(orderId: string, reason?: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error('Order not found');
+
+    const order = snap.data() as Order;
+    if (
+      order.status !== 'requested' &&
+      order.status !== 'approved' &&
+      order.status !== 'confirmed'
+    ) {
+      throw new Error('Can only reject requested/approved orders');
+    }
+
     await updateDoc(ref, {
       status: 'rejected',
       cancelReason: reason ?? null,
@@ -819,24 +899,175 @@ export const OrderService = {
     });
   },
 
+  /** 🚚 Ship: ตัดสต็อกจากสาขาผู้ส่ง (กันสต็อกติดลบด้วย transaction) + log transfer_out */
   async shipTransfer(orderId: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
+    const orderSnap = await getDoc(ref);
+    if (!orderSnap.exists()) throw new Error('Order not found');
+
+    const order = orderSnap.data() as Order;
+
+    // อนุญาตเฉพาะ approved (หรือ legacy confirmed)
+    if (order.status !== 'approved' && order.status !== 'confirmed') {
+      // ถ้าเคย shipped ไปแล้ว ให้ไม่ทำซ้ำ
+      if (order.status === 'shipped' || order.status === 'delivered') return;
+      throw new Error('Can only ship approved orders');
+    }
+
+    // ตัดสต็อกทีละรายการด้วย runTransaction เพื่อเช็คคงเหลือ
+    for (const item of order.items) {
+      const parsed = InventoryService.parseProductInfo(
+        { id: item.productId } as any,
+        order.sellerBranchId,
+        item.variantId,
+        item.dotCode
+      );
+
+      // ใช้ id ที่ canonical ใน "สาขาผู้ขาย"
+      const { brandId: bId, modelId: mId } = await resolveCanonicalIds(
+        order.sellerBranchId,
+        parsed.brandId,
+        parsed.modelId
+      );
+
+      await runTransaction(db, async (tx) => {
+        const dotRef = doc(
+          db,
+          'stores',
+          order.sellerBranchId,
+          'inventory',
+          bId,
+          'models',
+          mId,
+          'variants',
+          item.variantId,
+          'dots',
+          item.dotCode
+        );
+        const ds = await tx.get(dotRef);
+        if (!ds.exists()) throw new Error(`DOT ${item.dotCode} not found at seller branch`);
+        const curQty = Number((ds.data() as any).qty || 0);
+        if (curQty < item.quantity) {
+          throw new Error(
+            `Insufficient stock for ${item.productName} ${item.specification} DOT ${item.dotCode} at ${order.sellerBranchName} (have ${curQty}, need ${item.quantity})`
+          );
+        }
+        tx.update(dotRef, {
+          qty: increment(-item.quantity),
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      // log transfer_out (นอก transaction)
+      await addDoc(collection(db, 'stockMovements'), {
+        branchId: order.sellerBranchId,
+        orderId,
+        brand: bId,
+        model: mId,
+        variantId: item.variantId,
+        dotCode: item.dotCode,
+        qtyChange: -item.quantity,
+        type: 'transfer_out',
+        reason: `Transfer to ${order.buyerBranchName}`,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    // อัปเดตสถานะ → shipped
     await updateDoc(ref, { status: 'shipped', updatedAt: serverTimestamp() });
   },
 
-  /** alias เดิมบางที่เรียก deliverTransfer -> เทียบเท่า shipped/received */
-  async deliverTransfer(orderId: string): Promise<void> {
-    // เลือก mark เป็น 'shipped' (หรือจะเปลี่ยนเป็น 'received' ก็ได้ตาม flow)
-    return this.shipTransfer(orderId);
-  },
-
+  /** 📦 Receive: เพิ่มสต็อกให้สาขาผู้รับ (สร้าง path/dot ถ้ายังไม่มี) + log transfer_in */
   async receiveTransfer(orderId: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
+    const orderSnap = await getDoc(ref);
+    if (!orderSnap.exists()) throw new Error('Order not found');
+
+    const order = orderSnap.data() as Order;
+
+    // อนุญาตเฉพาะจาก shipped (หรือ legacy delivered) -> received
+    if (order.status !== 'shipped' && order.status !== 'delivered') {
+      // ถ้าเคยรับไปแล้ว ไม่ต้องทำซ้ำ
+      if (order.status === 'received') return;
+      throw new Error('Can only receive shipped orders');
+    }
+
+    for (const item of order.items) {
+      const infoSellerSide = InventoryService.parseProductInfo(
+        { id: item.productId } as any,
+        order.sellerBranchId,
+        item.variantId,
+        item.dotCode
+      );
+
+      // ใช้ canonical ของฝั่งผู้ขายเป็นต้นแบบให้ผู้รับ (ล็อกให้เป็น MICHELIN เดียวกัน)
+      const { brandId: bId, modelId: mId } = await resolveCanonicalIds(
+        order.sellerBranchId,
+        infoSellerSide.brandId,
+        infoSellerSide.modelId
+      );
+
+      // สร้างเส้นทาง variant/dot ในสาขาผู้รับถ้ายังไม่มี
+      await InventoryService.ensureVariantPath(
+        order.buyerBranchId,
+        bId,
+        mId,
+        item.variantId
+      );
+      await InventoryService.ensureDotDoc(
+        order.buyerBranchId,
+        bId,
+        mId,
+        item.variantId,
+        item.dotCode,
+        { qty: 0 }
+      );
+
+      // เพิ่มสต็อกให้ผู้รับ
+      await InventoryService.adjustDotQuantity(
+        order.buyerBranchId,
+        bId,
+        mId,
+        item.variantId,
+        item.dotCode,
+        item.quantity
+      );
+
+      // log transfer_in
+      await addDoc(collection(db, 'stockMovements'), {
+        branchId: order.buyerBranchId,
+        orderId,
+        brand: bId,
+        model: mId,
+        variantId: item.variantId,
+        dotCode: item.dotCode,
+        qtyChange: item.quantity,
+        type: 'transfer_in',
+        reason: `Transfer from ${order.sellerBranchName}`,
+        createdAt: serverTimestamp(),
+      });
+    }
+
+    // อัปเดตสถานะ → received
     await updateDoc(ref, { status: 'received', updatedAt: serverTimestamp() });
   },
 
+  /** alias เดิม: deliverTransfer = shipped (legacy) */
+  async deliverTransfer(orderId: string): Promise<void> {
+    // เพื่อความเข้ากันได้เก่า ให้ map ไปที่ ship
+    return this.shipTransfer(orderId);
+  },
+
+  /** ❌ Cancel (ยกเลิกได้เฉพาะก่อน ship) */
   async cancelTransfer(orderId: string, reason?: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
+    const snap = await getDoc(ref);
+    if (!snap.exists()) throw new Error('Order not found');
+
+    const order = snap.data() as Order;
+    if (order.status !== 'requested' && order.status !== 'approved' && order.status !== 'confirmed') {
+      throw new Error('Can only cancel orders that are not shipped yet');
+    }
     await updateDoc(ref, {
       status: 'cancelled',
       cancelReason: reason ?? null,
