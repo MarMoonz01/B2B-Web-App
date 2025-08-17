@@ -1,43 +1,28 @@
 'use client';
 
 import React from 'react';
-import { useRouter } from 'next/navigation';
-import MyInventory from '@/src/app/components/MyInventory';
-import { useBranch } from '@/contexts/BranchContext';
+import Link from 'next/link';
 import { Button } from '@/components/ui/button';
 
-export default function InventoryPage() {
-  const router = useRouter();
-  const { selectedBranchId, branches } = useBranch();
-  const myBranchId = selectedBranchId ?? '';
-  const myBranchName =
-    myBranchId ? (branches.find((b) => b.id === myBranchId)?.branchName ?? '') : '';
-
-  const goImport = () => {
-    if (!myBranchId) return;
-    router.push(
-      `/branches/new/inventory?branch=${encodeURIComponent(myBranchId)}&name=${encodeURIComponent(
-        myBranchName || myBranchId
-      )}`
-    );
-  };
-
+export default function BranchesPage() {
   return (
-    <div className="space-y-4">
-      <div className="flex justify-end">
-        <Button onClick={goImport} disabled={!myBranchId}>
-          Import CSV / Add Items
-        </Button>
+    <div className="container mx-auto p-6">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Branches</h1>
+        <div className="flex gap-2">
+          <Link href="/branches/new">
+            <Button>สร้างสาขาใหม่</Button>
+          </Link>
+          <Link href="/transfer">
+            <Button variant="secondary">Transfer</Button>
+          </Link>
+        </div>
       </div>
 
-      <MyInventory
-        myBranchId={myBranchId}
-        myBranchName={myBranchName}
-        // ✅ แก้ path ไป Transfer Platform ให้ถูก
-        onNavigate={(k) => {
-          if (k === 'transfer_platform') location.assign('/transfer-platform');
-        }}
-      />
+      <div className="mt-6 grid gap-4">
+        {/* รายการสาขา */}
+        {/* ... โค้ดแสดงตาราง/การ์ดสาขา ... */}
+      </div>
     </div>
   );
 }

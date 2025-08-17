@@ -232,6 +232,30 @@ export default function MyInventory({
     newBasePrice: '',
   });
 
+  // --- NEW: promo ทั้งรุ่น + แก้ base ราย variant ---
+  const [promoAll, setPromoAll] = useState(''); // โปรรวมทุก DOT ของรุ่น
+  const [variantBaseDraft, setVariantBaseDraft] = useState<Record<string, string>>({}); // base ของแต่ละ variant (draft)
+
+  // สร้างรายการ variants ไม่ซ้ำจาก row ที่กำลังแก้
+  const uniqueVariants = useMemo(() => {
+    const r = openEditProduct.row;
+    if (!r) return [];
+    const map = new Map<
+      string,
+      { variantId: string; spec: string; basePrice: number }
+    >();
+    for (const d of r.dotsAll) {
+      if (!map.has(d.variantId)) {
+        map.set(d.variantId, {
+          variantId: d.variantId,
+          spec: d.spec,
+          basePrice: d.basePrice,
+        });
+      }
+    }
+    return Array.from(map.values());
+  }, [openEditProduct.row]);
+
   // Save view mode to localStorage
   useEffect(() => {
     if (typeof window !== 'undefined') {
@@ -661,6 +685,8 @@ export default function MyInventory({
       newLoadIndex: '',
       newBasePrice: '',
     });
+    setPromoAll('');
+    setVariantBaseDraft({});
     setOpenEditProduct({ open: true, row: r });
   };
 
@@ -1617,7 +1643,7 @@ export default function MyInventory({
               Update promotional pricing for DOT {openPromo.dot?.dotCode}
             </DialogDescription>
           </DialogHeader>
-          <div className="space-y-3">
+        <div className="space-y-3">
             <div className="text-xs text-muted-foreground">
               DOT: <span className="font-mono">{openPromo.dot?.dotCode}</span> • Spec:{' '}
               {openPromo.dot?.spec}
@@ -1917,6 +1943,115 @@ export default function MyInventory({
                 >
                   Add Variant
                 </Button>
+              </div>
+            </div>
+
+            {/* --- NEW: Promo ทั้งรุ่น (ทุก DOT) --- */}
+            <div className="rounded-md border p-3 space-y-3">
+              <div className="text-xs font-medium text-muted-foreground">
+                Promo for ALL variants (leave empty to clear)
+              </div>
+              <div className="grid grid-cols-3 gap-3">
+                <div className="col-span-2">
+                  <Label className="text-xs">Promo price</Label>
+                  <Input
+                    className="mt-1"
+                    inputMode="decimal"
+                    placeholder="e.g. 3990 (เว้นว่างเพื่อลบโปร)"
+                    value={promoAll}
+                    onChange={(e) => setPromoAll(e.target.value)}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <Button
+                    size="sm"
+                    onClick={async () => {
+                      const r = openEditProduct.row!;
+                      const val = promoAll.trim();
+                      await toast.promise(
+                        Promise.all(
+                          r.dotsAll.map(async (d) => {
+                            const info = InventoryService.parseProductInfo(
+                              r.grouped,
+                              myBranchId,
+                              d.variantId,
+                              d.dotCode
+                            );
+                            await InventoryService.setPromoPrice(
+                              info.storeId,
+                              info.brandId,
+                              info.modelId,
+                              info.variantId,
+                              info.dotCode,
+                              val === '' ? null : Number(val)
+                            );
+                          })
+                        ),
+                        { loading: 'Applying promo...', success: 'Promo updated for all variants', error: (e: any) => e?.message ?? 'Failed' }
+                      );
+                      setOpenEditProduct((p) => ({ open: true, row: p.row })); // keep open
+                      qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
+                    }}
+                  >
+                    Apply to all
+                  </Button>
+                </div>
+              </div>
+            </div>
+
+            {/* --- NEW: ปรับ Base price ราย variant --- */}
+            <div className="rounded-md border p-3 space-y-2">
+              <div className="text-xs font-medium text-muted-foreground">Variants (Base price)</div>
+              <div className="space-y-2">
+                {uniqueVariants.length === 0 && (
+                  <div className="text-xs text-muted-foreground">No variants</div>
+                )}
+                {uniqueVariants.map((v) => (
+                  <div key={v.variantId} className="grid grid-cols-6 gap-3 items-end">
+                    <div className="col-span-3">
+                      <Label className="text-xs">Spec</Label>
+                      <Input className="mt-1" value={v.spec} disabled />
+                    </div>
+                    <div className="col-span-2">
+                      <Label className="text-xs">Base price</Label>
+                      <Input
+                        className="mt-1"
+                        inputMode="decimal"
+                        placeholder={String(v.basePrice ?? 0)}
+                        value={variantBaseDraft[v.variantId] ?? ''}
+                        onChange={(e) =>
+                          setVariantBaseDraft((s) => ({ ...s, [v.variantId]: e.target.value }))
+                        }
+                      />
+                    </div>
+                    <div className="col-span-1">
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          const r = openEditProduct.row!;
+                          const info = InventoryService.parseProductInfo(
+                            r.grouped,
+                            myBranchId,
+                            v.variantId,
+                            ''
+                          );
+                          const baseVal = (variantBaseDraft[v.variantId] ?? '').trim();
+                          ensureVariantMutation.mutate({
+                            storeId: info.storeId,
+                            brandId: info.brandId,
+                            modelId: info.modelId,
+                            variantId: v.variantId,
+                            init: {
+                              basePrice: baseVal === '' ? undefined : Number(baseVal),
+                            },
+                          });
+                        }}
+                      >
+                        Save
+                      </Button>
+                    </div>
+                  </div>
+                ))}
               </div>
             </div>
           </div>
