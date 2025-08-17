@@ -708,7 +708,7 @@ export default function TransferPlatformView({
     <div className="w-full space-y-4">
         {/* Search and Sort */}
         <div className="flex items-center gap-4">
-          <div className="relative flex-1 max-w-md">
+          <div className="relative flex-1">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input placeholder="Search products, brands, or stores..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10" />
           </div>
@@ -795,8 +795,8 @@ export default function TransferPlatformView({
 
   if (isLoading) {
     return (
-      <div className="min-h-screen bg-background">
-        <div className="container mx-auto p-6 space-y-6">
+      <div className="w-full min-h-screen bg-background">
+        <div className="w-full p-6 space-y-6">
           {HeaderBar}
           <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
             {Array.from({ length: 5 }).map((_, i) => (
@@ -823,8 +823,8 @@ export default function TransferPlatformView({
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="container mx-auto p-6 space-y-6">
+    <div className="w-full min-h-screen bg-background">
+      <div className="w-full p-6 space-y-6">
         {HeaderBar}
         {KpiBar}
         {FilterBar}

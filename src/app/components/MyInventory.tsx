@@ -1531,14 +1531,14 @@ export default function MyInventory({
 
   // ---------- Render ----------
   return (
-    <div className="space-y-6 md:space-y-8">
+    <div className="w-full min-h-screen space-y-6 md:space-y-8">
       {Header}
 
       {KPI}
 
       {FilterBar}
 
-      <div className="rounded-xl border bg-white overflow-x-auto shadow-sm">
+      <div className="w-full rounded-xl border bg-white overflow-x-auto shadow-sm">
         {viewMode === 'table' && (
           <>
             {TableHeader}
