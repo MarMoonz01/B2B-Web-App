@@ -163,6 +163,19 @@ export type StoreDoc = {
   updatedAt?: any;
 };
 
+// Type for Notification
+export type Notification = {
+    id?: string;
+    branchId: string; // ID of the branch to be notified
+    title: string;
+    message: string;
+    link: string;
+    orderId: string;
+    isRead: boolean;
+    createdAt: Timestamp;
+};
+
+
 /* =========================
  * Utils
  * =======================*/
@@ -189,8 +202,8 @@ function specFromVariant(v: { size?: string; loadIndex?: string } | null | undef
 
 /**
  * Canonical rules:
- *  - Brand IDs: UPPERCASE (เช่น MICHELIN)
- *  - Model IDs: slug (lowercase-with-dash)
+ * - Brand IDs: UPPERCASE (เช่น MICHELIN)
+ * - Model IDs: slug (lowercase-with-dash)
  * ฟังก์ชัน resolve* จะพยายามหา doc ที่มีอยู่จริงก่อน (ทั้ง exact/upper/slug/lower)
  * ถ้าไม่เจอ จะคืนค่าตามกติกาข้างบน
  */
@@ -803,6 +816,32 @@ export const InventoryService = {
 };
 
 /* =========================
+ * Notification Service
+ * =======================*/
+export const NotificationService = {
+  async createNotification(payload: {
+    branchId: string;
+    title: string;
+    message: string;
+    link: string;
+    orderId: string;
+  }) {
+    try {
+      // Do not create a notification for the branch that initiated the action
+      if (!payload.branchId) return;
+
+      await addDoc(collection(db, 'notifications'), {
+        ...payload,
+        isRead: false,
+        createdAt: serverTimestamp(),
+      });
+    } catch (error) {
+      console.error('Failed to create notification:', error);
+    }
+  },
+};
+
+/* =========================
  * Order Service (Best-practice transfer flow) — canonical IDs
  * =======================*/
 export const OrderService = {
@@ -823,6 +862,16 @@ export const OrderService = {
       updatedAt: serverTimestamp(),
     };
     const ref = await addDoc(collection(db, 'orders'), orderData);
+
+    // >> [ADD] Create notification for the seller
+    await NotificationService.createNotification({
+      branchId: payload.sellerBranchId,
+      title: 'New Transfer Request',
+      message: `Request from ${payload.buyerBranchName} for order #${ref.id.slice(0, 6)}`,
+      orderId: ref.id,
+      link: `/?view=transfer_requests`,
+    });
+
     return ref.id;
   },
 
@@ -876,6 +925,15 @@ export const OrderService = {
       throw new Error('Can only approve requested orders');
     }
     await updateDoc(ref, { status: 'approved', updatedAt: serverTimestamp() });
+
+    // >> [ADD] Notify buyer that the request was approved
+    await NotificationService.createNotification({
+      branchId: order.buyerBranchId,
+      title: 'Request Approved',
+      message: `Your request #${orderId.slice(0,6)} has been approved by ${order.sellerBranchName}.`,
+      orderId: orderId,
+      link: `/?view=transfer_requests`,
+    });
   },
 
   async rejectTransfer(orderId: string, reason?: string): Promise<void> {
@@ -896,6 +954,15 @@ export const OrderService = {
       status: 'rejected',
       cancelReason: reason ?? null,
       updatedAt: serverTimestamp(),
+    });
+
+    // >> [ADD] Notify buyer that the request was rejected
+    await NotificationService.createNotification({
+      branchId: order.buyerBranchId,
+      title: 'Request Rejected',
+      message: `Your request #${orderId.slice(0,6)} was rejected by ${order.sellerBranchName}.`,
+      orderId: orderId,
+      link: `/?view=transfer_requests`,
     });
   },
 
@@ -975,6 +1042,15 @@ export const OrderService = {
 
     // อัปเดตสถานะ → shipped
     await updateDoc(ref, { status: 'shipped', updatedAt: serverTimestamp() });
+
+    // >> [ADD] Notify buyer that the order has been shipped
+    await NotificationService.createNotification({
+      branchId: order.buyerBranchId,
+      title: 'Order Shipped',
+      message: `Order #${orderId.slice(0,6)} from ${order.sellerBranchName} is on its way.`,
+      orderId: orderId,
+      link: `/?view=transfer_requests`,
+    });
   },
 
   /** 📦 Receive: เพิ่มสต็อกให้สาขาผู้รับ (สร้าง path/dot ถ้ายังไม่มี) + log transfer_in */
@@ -1050,6 +1126,15 @@ export const OrderService = {
 
     // อัปเดตสถานะ → received
     await updateDoc(ref, { status: 'received', updatedAt: serverTimestamp() });
+    
+    // >> [ADD] Notify seller that the order has been received
+    await NotificationService.createNotification({
+      branchId: order.sellerBranchId,
+      title: 'Order Received',
+      message: `${order.buyerBranchName} has confirmed receiving order #${orderId.slice(0,6)}.`,
+      orderId: orderId,
+      link: `/?view=transfer_requests`,
+    });
   },
 
   /** alias เดิม: deliverTransfer = shipped (legacy) */
@@ -1073,6 +1158,15 @@ export const OrderService = {
       cancelReason: reason ?? null,
       updatedAt: serverTimestamp(),
     });
+    
+    // >> [ADD] Notify seller that the request was cancelled
+    await NotificationService.createNotification({
+      branchId: order.sellerBranchId,
+      title: 'Request Cancelled',
+      message: `Request #${orderId.slice(0,6)} from ${order.buyerBranchName} has been cancelled.`,
+      orderId: orderId,
+      link: `/?view=transfer_requests`,
+    });
   },
 };
 
@@ -1083,6 +1177,7 @@ export default {
   StoreService,
   InventoryService,
   OrderService,
+  NotificationService, // Add NotificationService to default export
   // utils
   slugifyId,
   ensureArray,

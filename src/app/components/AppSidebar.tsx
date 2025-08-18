@@ -15,6 +15,7 @@ import {
 
 import BranchSelect from '@/src/app/components/BranchSelect';
 import { useBranch } from '@/contexts/BranchContext';
+import NotificationBell from './NotificationBell'; // <-- 1. เพิ่ม Import
 
 // ใช้ type เดียวกับ /types/nav.ts
 import type { ViewKey } from '@/types/nav';
@@ -114,8 +115,13 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
               Tire Network
             </div>
           </div>
-          {/* ปุ่มทริกเกอร์ยังอยู่ แต่ซ่อนไว้ตอนหุบเพื่อไม่ให้ดันความกว้าง */}
-          <SidebarTrigger className="ml-auto group-data-[state=collapsed]/sidebar:hidden" />
+          
+          {/* 2. เพิ่ม NotificationBell และจัดกลุ่มกับปุ่ม Trigger */}
+          <div className="flex items-center">
+            <NotificationBell />
+            <SidebarTrigger className="ml-auto group-data-[state=collapsed]/sidebar:hidden" />
+          </div>
+
         </div>
 
         {/* BranchSelect + active id — ซ่อนตอนหุบ */}

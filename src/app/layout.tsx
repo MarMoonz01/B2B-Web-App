@@ -6,6 +6,7 @@ import { BranchProvider } from "@/contexts/BranchContext";
 import { SidebarProvider } from "@/components/ui/sidebar";
 import AppSidebar from "@/src/app/components/AppSidebar";
 import { Toaster } from "sonner";
+import { NotificationProvider } from "@/contexts/NotificationContext"; // 导入 NotificationProvider
 
 export const metadata = {
   title: "Tire Network",
@@ -27,26 +28,28 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         >
           <QueryProvider>
             <BranchProvider>
-              <SidebarProvider>
-                {/* App shell: grid -> sidebar + content(minmax(0,1fr)) */}
-                <div
-                  id="app-shell"
-                  className="grid w-full min-h-dvh grid-cols-[auto_minmax(0,1fr)]"
-                >
-                  {/* Sidebar: ไม่ให้หดผิดรูป */}
-                  <aside id="app-sidebar" className="shrink-0">
-                    <AppSidebar />
-                  </aside>
-
-                  {/* Content: ยืดเต็มที่เหลือ */}
-                  <main
-                    id="app-content"
-                    className="w-full min-w-0 overflow-x-hidden"
+              <NotificationProvider> {/* <== 添加 NotificationProvider */}
+                <SidebarProvider>
+                  {/* App shell: grid -> sidebar + content(minmax(0,1fr)) */}
+                  <div
+                    id="app-shell"
+                    className="grid w-full min-h-dvh grid-cols-[auto_minmax(0,1fr)]"
                   >
-                    {children}
-                  </main>
-                </div>
-              </SidebarProvider>
+                    {/* Sidebar: 不会不成比例地缩小 */}
+                    <aside id="app-sidebar" className="shrink-0">
+                      <AppSidebar />
+                    </aside>
+
+                    {/* Content: 填充剩余空间 */}
+                    <main
+                      id="app-content"
+                      className="w-full min-w-0 overflow-x-hidden"
+                    >
+                      {children}
+                    </main>
+                  </div>
+                </SidebarProvider>
+              </NotificationProvider> {/* <== 关闭 NotificationProvider */}
             </BranchProvider>
           </QueryProvider>
 
