@@ -130,10 +130,12 @@ interface DotPick {
   hasPromo: boolean;
 }
 
-interface CartItem extends OrderItem {
+interface CartItem extends Omit<OrderItem, 'unitPrice' | 'totalPrice'> {
   branchName: string;
   branchId: string;
   maxQty: number;
+  unitPrice?: number; // Not used for logic, but kept for potential display
+  totalPrice?: number; // Not used for logic
 }
 
 type TPRow = {
@@ -191,6 +193,33 @@ export default function TransferPlatformViewRedesign({
   const [sortBy, setSortBy] = useState<'relevance' | 'price-low' | 'price-high' | 'rating' | 'popular' | 'distance' | 'brand'>('relevance');
   const [selectedSize, setSelectedSize] = useState<string>('All Sizes');
   const [hasPromotion, setHasPromotion] = useState<boolean>(false);
+
+  // --- NEW: Clear Filters Function ---
+  const clearFilters = () => {
+    setSelectedBrand('All Brands');
+    setSelectedStore('all');
+    setSearchTerm('');
+    setInStockOnly(true);
+    setLowStockOnly(false);
+    setSortBy('relevance');
+    setSelectedSize('All Sizes');
+    setHasPromotion(false);
+    toast.info('Filters cleared');
+  };
+  
+  // Check if any filter is active
+  const isFiltered = useMemo(() => {
+    return (
+      selectedBrand !== 'All Brands' ||
+      selectedStore !== 'all' ||
+      searchTerm !== '' ||
+      !inStockOnly ||
+      lowStockOnly ||
+      sortBy !== 'relevance' ||
+      selectedSize !== 'All Sizes' ||
+      hasPromotion
+    );
+  }, [selectedBrand, selectedStore, searchTerm, inStockOnly, lowStockOnly, sortBy, selectedSize, hasPromotion]);
 
   // Dot picker & cart
   const [isDialogOpen, setIsDialogOpen] = useState(false);
@@ -465,8 +494,6 @@ export default function TransferPlatformViewRedesign({
       specification: item.sizeSpec,
       dotCode: item.dotCode,
       quantity: item.selected,
-      unitPrice: item.price,
-      totalPrice: item.price * item.selected,
       variantId: item.variantId,
       maxQty: item.available,
     }));
@@ -492,7 +519,6 @@ export default function TransferPlatformViewRedesign({
   };
 
   const cartCount = useMemo(() => cart.reduce((s, it) => s + it.quantity, 0), [cart]);
-  const cartTotal = useMemo(() => cart.reduce((s, it) => s + it.totalPrice, 0), [cart]);
   const cartSourceBranchName = useMemo(() => (cart.length ? cart[0].branchName : 'your cart'), [cart]);
 
   const handleSubmitOrder = async () => {
@@ -507,8 +533,6 @@ export default function TransferPlatformViewRedesign({
         sellerBranchId,
         sellerBranchName,
         items: cart.map(({ branchId, branchName, maxQty, ...item }) => item),
-        totalAmount: cartTotal,
-        status: 'requested',
         notes,
       });
       toast.success(`Transfer request sent to ${sellerBranchName}!`);
@@ -805,6 +829,14 @@ export default function TransferPlatformViewRedesign({
               <Switch checked={hasPromotion} onCheckedChange={(v) => setHasPromotion(Boolean(v))} />
               <Label>On Sale</Label>
             </div>
+            
+            {/* --- NEW: Clear Filters Button --- */}
+            {isFiltered && (
+              <Button variant="ghost" size="sm" onClick={clearFilters} className="text-muted-foreground">
+                <X className="h-4 w-4 mr-1" />
+                Clear
+              </Button>
+            )}
           </div>
         </div>
       </div>
@@ -1150,7 +1182,7 @@ export default function TransferPlatformViewRedesign({
           >
             <Button onClick={() => setIsCartOpen(true)} className="rounded-full shadow-lg px-6 py-6">
               <ShoppingCart className="h-4 w-4 mr-2" />
-              {cartCount} • {formatTHB(cartTotal)}
+              View Cart ({cartCount} items)
             </Button>
           </motion.div>
         )}
@@ -1213,7 +1245,7 @@ export default function TransferPlatformViewRedesign({
                       <div className="flex-1 min-w-0">
                         <div className="font-medium truncate">{item.productName}</div>
                         <div className="text-sm text-muted-foreground">{item.specification} • {item.dotCode}</div>
-                        <div className="text-sm">{item.quantity} × {formatTHB(item.unitPrice)} = {formatTHB(item.totalPrice)}</div>
+                        <div className="text-sm font-semibold">Quantity: {item.quantity}</div>
                       </div>
                       <Button variant="outline" size="sm" onClick={() => removeFromCart(item.dotCode, item.variantId, item.branchId)}>
                         <Minus className="h-4 w-4" />
@@ -1226,8 +1258,8 @@ export default function TransferPlatformViewRedesign({
 
                 <div className="space-y-2">
                   <div className="flex justify-between font-medium">
-                    <span>Total ({cartCount} items)</span>
-                    <span>{formatTHB(cartTotal)}</span>
+                    <span>Total Items</span>
+                    <span>{cartCount}</span>
                   </div>
                 </div>
 

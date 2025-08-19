@@ -1,18 +1,17 @@
 'use client';
 
-import React, { useMemo, useState } from 'react';
-import { useQuery, useQueryClient, useMutation } from '@tanstack/react-query';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { useMutation } from '@tanstack/react-query';
 import { toast } from 'sonner';
 import Lottie from 'lottie-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { GroupedVirtuoso } from 'react-virtuoso';
 import {
   Check,
   X,
   Truck,
   PackageCheck,
   Ban,
-  RefreshCw,
-  Info,
   ClipboardList,
   ArrowLeftRight,
   Building2,
@@ -20,105 +19,70 @@ import {
   ChevronDown,
   CircleAlert,
   Tags,
+  RefreshCw,
 } from 'lucide-react';
+import { format, formatDistanceToNow } from 'date-fns';
 
-// UI Components (shadcn)
+// shadcn/ui
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
-import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
+import { Badge } from '@/components/ui/badge';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 
 // Services & Types
-import { OrderService } from '@/lib/services/InventoryService';
-import type { OrderStatus } from '@/lib/services/InventoryService';
+import { OrderService, type Order, type OrderItem, type OrderStatus } from '@/lib/services/InventoryService';
 
-// Contexts
-import { useBranch } from '@/contexts/BranchContext';
-
-// Animations — make sure these files exist and paths are correct
+// Animations
 import truckAnimation from '@/animations/truck-shipping.json';
 import receivedAnimation from '@/animations/order-received.json';
 
+/* ===============================================================
+ * Realtime hook
+ * =============================================================*/
+function useRealtimeOrders(branchId: string, role: 'buyer' | 'seller') {
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
-// ================================================================
-// Types & Utils
-// ================================================================
+  useEffect(() => {
+    if (!branchId) {
+      setIsLoading(false);
+      setOrders([]);
+      return;
+    }
+    setIsLoading(true);
+    const unsubscribe = OrderService.onOrdersByBranch(branchId, role, (newOrders) => {
+      setOrders(newOrders);
+      setIsLoading(false);
+    });
+    return () => unsubscribe?.();
+  }, [branchId, role]);
 
-type Order = any;
-
-type OrderItem = {
-  id?: string;
-  name?: string;
-  sku?: string;
-  quantity?: number;
-  price?: number;
-  total?: number;
-  // --- ADDED FOR CLARITY ---
-  specification?: string; // This will hold the "size" info
-  dotCode?: string;
-};
-
-function THB(n: number) {
-  return new Intl.NumberFormat('th-TH', {
-    style: 'currency',
-    currency: 'THB',
-    maximumFractionDigits: 0,
-  }).format(Number(n) || 0);
+  return { data: orders, isLoading };
 }
 
-async function invoke<T = any>(names: string[], ...args: any[]): Promise<T> {
-  const svc: any = OrderService as any;
-  for (const n of names) {
-    if (typeof svc?.[n] === 'function') return await svc[n](...args);
-  }
-  throw new Error(`Method not found on OrderService: ${names.join(' / ')}`);
-}
-
-function extractRawItems(order: Order): any[] {
-  return (
-    order?.items ||
-    order?.lines ||
-    order?.orderItems ||
-    order?.products ||
-    order?.productList ||
-    order?.details ||
-    []
-  );
-}
-
-// --- MODIFIED: แก้ไข normalizeItem ให้ดึง size/spec และ dot ---
-function normalizeItem(i: any): OrderItem {
-  return {
-    id: i?.id || i?.itemId || i?.productId || i?.sku,
-    name: i?.name || i?.productName || i?.title || i?.sku || 'Item',
-    sku: i?.sku,
-    quantity: i?.quantity ?? i?.qty ?? i?.amount ?? 0,
-    price: i?.price ?? i?.unitPrice ?? undefined,
-    total: i?.total ?? i?.lineTotal ?? i?.price ?? i?.unitPrice ?? 0,
-    // --- NEW ---
-    specification: i?.specification || i?.size || '',
-    dotCode: i?.dotCode || '',
-  };
-}
-
-function getItems(order: Order): OrderItem[] {
-  const raw = extractRawItems(order);
-  return Array.isArray(raw) ? raw.map(normalizeItem) : [];
-}
-
-// ... (ส่วนอื่นๆ ของไฟล์เหมือนเดิม)
-// ================================================================
-// Status & Visual Meta
-// ================================================================
-
+/* ===============================================================
+ * Status Meta & Small UI
+ * =============================================================*/
 const STATUS_META: Record<
   OrderStatus,
-  {
-    label: string;
-    className: string;
-    dot: string;
-    step: number; // 0-4
-  }
+  { label: string; className: string; dot: string; step: number }
 > = {
   requested: {
     label: 'Requested',
@@ -178,12 +142,13 @@ const STATUS_META: Record<
   },
 };
 
+const STATUS_ORDER: OrderStatus[] = ['requested', 'approved', 'shipped', 'received', 'rejected', 'cancelled'];
+
 function StatusBadge({ status }: { status: OrderStatus }) {
   const meta = STATUS_META[status];
+  if (!meta) return null;
   return (
-    <span
-      className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.className}`}
-    >
+    <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-semibold ${meta.className}`}>
       <span className={`h-1.5 w-1.5 rounded-full ${meta.dot}`} />
       {meta.label}
     </span>
@@ -194,7 +159,6 @@ function ProgressRail({ status }: { status: OrderStatus }) {
   const step = STATUS_META[status]?.step ?? 0;
   const pct = Math.min(100, Math.max(0, (step / 4) * 100));
   const labels = ['Requested', 'Approved', 'Shipped', 'Received'];
-
   return (
     <div className="mt-3 select-none">
       <div className="h-1.5 w-full rounded-full bg-muted overflow-hidden">
@@ -210,207 +174,305 @@ function ProgressRail({ status }: { status: OrderStatus }) {
 }
 
 function TransferStatusAnimator({ status }: { status: OrderStatus }) {
-  if (status === 'shipped') {
+  if (status === 'shipped' || status === 'delivered') {
     return <Lottie className="w-14 h-14" animationData={truckAnimation} loop />;
   }
-  if (status === 'received' || status === 'delivered') {
+  if (status === 'received') {
     return <Lottie className="w-12 h-12" animationData={receivedAnimation} loop={false} />;
   }
   return <div className="w-14 h-14" />;
 }
 
-// ...
+/* ===============================================================
+ * Main Component
+ * =============================================================*/
+export default function TransferRequestsView({ myBranchId, myBranchName }: { myBranchId: string; myBranchName: string }) {
+  const [expandedOrders, setExpandedOrders] = useState<Record<string, boolean>>({});
+  const toggleExpanded = (id: string) => setExpandedOrders((prev) => ({ ...prev, [id]: !prev[id] }));
 
-function useOrderItems(order: Order) {
-  const embedded = getItems(order);
-  const enabled = embedded.length === 0 && Boolean(order?.id);
-  const q = useQuery({
-    queryKey: ['orderItems', order?.id],
-    queryFn: async () =>
-      await invoke(['getOrderItems', 'getTransferItems', 'getOrderLines', 'getItemsByOrderId'], order?.id),
-    enabled,
-    staleTime: 60_000,
-  });
-  const remote = Array.isArray(q.data) ? q.data.map(normalizeItem) : [];
-  return { items: embedded.length ? embedded : remote, loading: q.isLoading };
-}
-
-
-// ... (ส่วน Main Component และฟังก์ชันอื่นๆ ที่ไม่เกี่ยวกับการแสดงผล item เหมือนเดิม)
-// ... (ขอข้ามไปที่ส่วน UI Bits ที่มีการเปลี่ยนแปลง)
-
-// ================================================================
-// Main Component
-// ================================================================
-export default function TransferRequestsView({
-  myBranchId: _myBranchId,
-  myBranchName: _myBranchName,
-}: {
-  myBranchId?: string;
-  myBranchName?: string;
-}) {
-  const qc = useQueryClient();
-  const { selectedBranchId, branches } = useBranch();
-  const myBranchId = _myBranchId || selectedBranchId || '';
-  const myBranchName =
-    _myBranchName || (myBranchId ? branches.find((b) => b.id === myBranchId)?.branchName ?? myBranchId : '');
-
-  const [statusFilter, setStatusFilter] = useState<OrderStatus | 'all'>('all');
-
-  const buyerQ = useQuery<Order[]>({
-    queryKey: ['orders', myBranchId, 'buyer'],
-    queryFn: () => invoke(['getOrdersByBranch'], myBranchId, 'buyer'),
-    enabled: !!myBranchId,
-    refetchInterval: 10_000,
-  });
-
-  const sellerQ = useQuery<Order[]>({
-    queryKey: ['orders', myBranchId, 'seller'],
-    queryFn: () => invoke(['getOrdersByBranch'], myBranchId, 'seller'),
-    enabled: !!myBranchId,
-    refetchInterval: 10_000,
-  });
-
-  const { data: buyerOrders = [], isLoading: isBuyerLoading } = buyerQ;
-  const { data: sellerOrders = [], isLoading: isSellerLoading } = sellerQ;
+  const { data: buyerOrders, isLoading: isBuyerLoading } = useRealtimeOrders(myBranchId, 'buyer');
+  const { data: sellerOrders, isLoading: isSellerLoading } = useRealtimeOrders(myBranchId, 'seller');
   const loading = isBuyerLoading || isSellerLoading;
 
-  const filteredBuyer = useMemo(
-    () => (statusFilter === 'all' ? buyerOrders : buyerOrders.filter((o) => o.status === statusFilter)),
-    [buyerOrders, statusFilter],
-  );
-  const filteredSeller = useMemo(
-    () => (statusFilter === 'all' ? sellerOrders : sellerOrders.filter((o) => o.status === statusFilter)),
-    [sellerOrders, statusFilter],
-  );
+  // ====== Toolbar state ======
+  const [searchQ, setSearchQ] = useState('');
+  const searchRef = useRef<HTMLInputElement | null>(null);
+  const [statusFilter, setStatusFilter] = useState<OrderStatus | 'all'>('all');
+  const [viewMode, setViewMode] = useState<'list' | 'board'>('list');
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
+  const [activePane, setActivePane] = useState<'both' | 'outgoing' | 'incoming'>('both');
+  useEffect(() => { if (typeof window !== 'undefined' && window.innerWidth < 1024) setActivePane('outgoing'); }, []);
 
-  const createMutation = (fnNames: string[], successMsg: string, errorMsg: string) =>
-    useMutation({
-      mutationFn: (id: string) => invoke(fnNames, id),
-      onSuccess: () => {
-        toast.success(successMsg);
-        qc.invalidateQueries({ queryKey: ['orders', myBranchId] });
-      },
-      onError: (e: any) => toast.error(e?.message ?? errorMsg),
-    });
+  // ====== Keyboard shortcuts ======
+  const [focusedIdxOutgoing, setFocusedIdxOutgoing] = useState(0);
+  const [focusedIdxIncoming, setFocusedIdxIncoming] = useState(0);
+  useEffect(() => {
+    const fits = (o: Order) => {
+      const q = searchQ.trim().toLowerCase();
+      const passQ = !q || o.id?.toLowerCase().includes(q) || `${o.buyerBranchName} ${o.sellerBranchName}`.toLowerCase().includes(q);
+      const passStatus = statusFilter === 'all' ? true : o.status === statusFilter || (statusFilter === 'received' && o.status === 'delivered');
+      const created = o.createdAt?.toDate?.() as Date | undefined;
+      const fromOk = !dateFrom || (created && created >= new Date(dateFrom + 'T00:00:00'));
+      const toOk = !dateTo || (created && created <= new Date(dateTo + 'T23:59:59'));
+      return passQ && passStatus && fromOk && toOk;
+    };
 
-  const approveMut = createMutation(['approveTransfer', 'approveOrder', 'confirmOrder'], 'Approved', 'Approve failed');
-  const rejectMut = createMutation(['rejectTransfer', 'rejectOrder'], 'Rejected', 'Reject failed');
-  const shipMut = createMutation(['shipTransfer', 'shipOrder'], 'Marked as shipped', 'Ship failed');
-  const receiveMut = createMutation(['receiveTransfer', 'deliverTransfer', 'receiveOrder'], 'Received', 'Receive failed');
-  const cancelMut = createMutation(['cancelTransfer', 'cancelOrder'], 'Cancelled', 'Cancel failed');
+    const onKey = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
+      const inEditable = tag === 'input' || tag === 'textarea' || (e.target as HTMLElement)?.isContentEditable;
+      if (e.key === '/' && !inEditable) {
+        e.preventDefault();
+        searchRef.current?.focus();
+        return;
+      }
+      const list = (activePane === 'incoming' ? sellerOrders : buyerOrders).filter(fits);
+      if (!list.length) return;
 
-  const isPending =
+      if (e.key === 'ArrowDown' && !inEditable) {
+        e.preventDefault();
+        activePane === 'incoming'
+          ? setFocusedIdxIncoming((i) => Math.min(i + 1, list.length - 1))
+          : setFocusedIdxOutgoing((i) => Math.min(i + 1, list.length - 1));
+      }
+      if (e.key === 'ArrowUp' && !inEditable) {
+        e.preventDefault();
+        activePane === 'incoming'
+          ? setFocusedIdxIncoming((i) => Math.max(i - 1, 0))
+          : setFocusedIdxOutgoing((i) => Math.max(i - 1, 0));
+      }
+      if (e.key === 'Enter' && !inEditable) {
+        e.preventDefault();
+        const idx = activePane === 'incoming' ? focusedIdxIncoming : focusedIdxOutgoing;
+        const order = list[idx];
+        if (order?.id) toggleExpanded(order.id);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [activePane, buyerOrders, sellerOrders, searchQ, statusFilter, dateFrom, dateTo, focusedIdxIncoming, focusedIdxOutgoing]);
+
+  // ====== Per-card pending ======
+  const [pendingId, setPendingId] = useState<string | null>(null);
+
+  const [modal, setModal] = useState<{ open: boolean; type: 'reject' | 'cancel' | null; orderId: string | null }>({ open: false, type: null, orderId: null });
+  const [reason, setReason] = useState('');
+
+  // Mutations
+  const approveMut = useMutation({
+    mutationFn: (id: string) => OrderService.approveTransfer(id),
+    onSuccess: () => toast.success('Request Approved'),
+    onError: (e: any) => toast.error('Approve failed', { description: e?.message || String(e) }),
+    onSettled: () => setPendingId(null),
+  });
+  const rejectMut = useMutation({
+    mutationFn: (vars: { id: string; reason: string }) => OrderService.rejectTransfer(vars.id, vars.reason),
+    onSuccess: () => toast.success('Request Rejected'),
+    onError: (e: any) => toast.error('Reject failed', { description: e?.message || String(e) }),
+    onSettled: () => setPendingId(null),
+  });
+  const shipMut = useMutation({
+    mutationFn: (id: string) => OrderService.shipTransfer(id),
+    onSuccess: () => toast.success('Marked as Shipped'),
+    onError: (e: any) => toast.error('Ship failed', { description: e?.message || String(e) }),
+    onSettled: () => setPendingId(null),
+  });
+  const receiveMut = useMutation({
+    mutationFn: (id: string) => OrderService.receiveTransfer(id),
+    onSuccess: () => toast.success('Marked as Received'),
+    onError: (e: any) => toast.error('Receive failed', { description: e?.message || String(e) }),
+    onSettled: () => setPendingId(null),
+  });
+  const cancelMut = useMutation({
+    mutationFn: (vars: { id: string; reason: string }) => OrderService.cancelTransfer(vars.id, vars.reason),
+    onSuccess: () => toast.success('Request Cancelled'),
+    onError: (e: any) => toast.error('Cancel failed', { description: e?.message || String(e) }),
+    onSettled: () => setPendingId(null),
+  });
+
+  const isAnyPending =
     approveMut.isPending || rejectMut.isPending || shipMut.isPending || receiveMut.isPending || cancelMut.isPending;
 
-  // ------------------------------------------------------------
-  // UI Sub-Components
-  // ------------------------------------------------------------
+  // ====== Filtering helpers ======
+  const fitsFilter = (o: Order) => {
+    const q = searchQ.trim().toLowerCase();
+    const passQ =
+      !q ||
+      o.id?.toLowerCase().includes(q) ||
+      `${o.buyerBranchName} ${o.sellerBranchName}`.toLowerCase().includes(q);
 
-  function ActionBar({ order, role }: { order: Order; role: 'buyer' | 'seller' }) {
+    const passStatus =
+      statusFilter === 'all'
+        ? true
+        : o.status === statusFilter || (statusFilter === 'received' && o.status === 'delivered');
+
+    const created = o.createdAt?.toDate?.() as Date | undefined;
+    const passDate = (() => {
+      if (!created) return true;
+      const fromOk = !dateFrom || created >= new Date(dateFrom + 'T00:00:00');
+      const toOk = !dateTo || created <= new Date(dateTo + 'T23:59:59');
+      return fromOk && toOk;
+    })();
+
+    return passQ && passStatus && passDate;
+  };
+
+  const filteredBuyer = useMemo(
+    () => buyerOrders.filter(fitsFilter),
+    [buyerOrders, searchQ, statusFilter, dateFrom, dateTo]
+  );
+  const filteredSeller = useMemo(
+    () => sellerOrders.filter(fitsFilter),
+    [sellerOrders, searchQ, statusFilter, dateFrom, dateTo]
+  );
+
+  const buyerPendingCount = filteredBuyer.length;
+  const sellerPendingCount = filteredSeller.length;
+
+  // ====== UI Blocks ======
+  const ActionBar = ({ order, role }: { order: Order; role: 'buyer' | 'seller' }) => {
     const s: OrderStatus = order.status;
+    const disabled = isAnyPending && pendingId === order.id;
+
+    const Btn = ({ tip, children }: { tip: string; children: React.ReactNode }) => (
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div>{children}</div>
+        </TooltipTrigger>
+        <TooltipContent className="text-xs">{tip}</TooltipContent>
+      </Tooltip>
+    );
+
     if (role === 'seller') {
       if (s === 'requested') {
         return (
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" onClick={() => approveMut.mutate(order.id)} disabled={isPending}>
-              <Check className="h-4 w-4 mr-1" /> Approve
-            </Button>
-            <Button size="sm" variant="destructive" onClick={() => rejectMut.mutate(order.id)} disabled={isPending}>
-              <X className="h-4 w-4 mr-1" /> Reject
-            </Button>
+            <Btn tip="Approve this request">
+              <Button
+                size="sm"
+                onClick={() => {
+                  setPendingId(order.id!);
+                  approveMut.mutate(order.id!);
+                }}
+                disabled={disabled}
+                className="shadow-sm transition-transform active:scale-95"
+              >
+                <Check className="h-4 w-4 mr-1" /> Approve
+              </Button>
+            </Btn>
+            <Btn tip="Reject and provide a reason">
+              <Button
+                size="sm"
+                variant="destructive"
+                onClick={() => setModal({ open: true, type: 'reject', orderId: order.id! })}
+                disabled={disabled}
+                className="shadow-sm transition-transform active:scale-95"
+              >
+                <X className="h-4 w-4 mr-1" /> Reject
+              </Button>
+            </Btn>
           </div>
         );
       }
       if (s === 'approved' || s === 'confirmed') {
         return (
-          <Button size="sm" onClick={() => shipMut.mutate(order.id)} disabled={isPending}>
-            <Truck className="h-4 w-4 mr-1" /> Mark Shipped
-          </Button>
+          <Btn tip="Mark as shipped (stock will be deducted)">
+            <Button
+              size="sm"
+              onClick={() => {
+                setPendingId(order.id!);
+                shipMut.mutate(order.id!);
+              }}
+              disabled={disabled}
+              className="shadow-sm transition-transform active:scale-95"
+            >
+              <Truck className="h-4 w-4 mr-1" /> Mark Shipped
+            </Button>
+          </Btn>
         );
       }
     }
     if (role === 'buyer') {
       if (s === 'requested' || s === 'approved' || s === 'confirmed') {
         return (
-          <Button size="sm" variant="outline" onClick={() => cancelMut.mutate(order.id)} disabled={isPending}>
-            <Ban className="h-4 w-4 mr-1" /> Cancel
-          </Button>
+          <Btn tip="Cancel this request">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setModal({ open: true, type: 'cancel', orderId: order.id! })}
+              disabled={disabled}
+              className="shadow-sm transition-transform active:scale-95"
+            >
+              <Ban className="h-4 w-4 mr-1" /> Cancel
+            </Button>
+          </Btn>
         );
       }
-      if (s === 'shipped') {
+      if (s === 'shipped' || s === 'delivered') {
         return (
-          <Button size="sm" onClick={() => receiveMut.mutate(order.id)} disabled={isPending}>
-            <PackageCheck className="h-4 w-4 mr-1" /> Mark Received
-          </Button>
+          <Btn tip="Confirm goods received (stock will be increased)">
+            <Button
+              size="sm"
+              onClick={() => {
+                setPendingId(order.id!);
+                receiveMut.mutate(order.id!);
+              }}
+              disabled={disabled}
+              className="shadow-sm transition-transform active:scale-95"
+            >
+              <PackageCheck className="h-4 w-4 mr-1" /> Mark Received
+            </Button>
+          </Btn>
         );
       }
     }
     return null;
-  }
+  };
 
-  // --- MODIFIED: แก้ไข ItemsBlock ให้แสดง size และ dot ---
-  function ItemsBlock({ order }: { order: Order }) {
-    const { items, loading } = useOrderItems(order);
-
+  const ItemsBlock = ({ order }: { order: Order }) => {
+    const items = (order.items || []) as OrderItem[];
+    const totalQty = items.reduce((s, it) => s + Number(it.quantity || 0), 0);
     return (
       <div className="rounded-xl border p-3 bg-card/60">
         <div className="flex items-center justify-between mb-2">
           <div className="font-medium text-sm">Order Items</div>
-          <div className="text-xs text-muted-foreground">{loading ? 'Loading...' : `${items.length} items`}</div>
+          <div className="text-xs text-muted-foreground">{items.length} items • {totalQty} pcs</div>
         </div>
-        {loading ? (
-          <div className="space-y-2">
-            {Array.from({ length: 3 }).map((_, i) => <Skeleton key={i} className="h-10 w-full rounded-lg" />)}
+        {order.cancelReason && (
+          <div className="mb-2 p-2 text-xs rounded-lg bg-red-50 border border-red-200 text-red-700">
+            <b>Reason:</b> {order.cancelReason}
           </div>
-        ) : items.length ? (
+        )}
+        {items.length ? (
           <div className="space-y-2">
             {items.map((it, idx) => (
-              <div key={it.id ?? idx} className="flex items-center justify-between rounded-lg bg-muted/30 p-2">
+              <div key={idx} className="flex items-center justify-between rounded-lg bg-muted/30 p-2">
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{it.name}</div>
-                  {/* --- NEW: แสดง Size และ DOT --- */}
+                  <div className="truncate text-sm font-medium">{it.productName}</div>
                   <div className="text-xs text-muted-foreground">
                     {it.specification && <span>{it.specification}</span>}
                     {it.dotCode && <span className="font-mono ml-2">DOT {it.dotCode}</span>}
                   </div>
-                   <div className="text-xs text-muted-foreground">x{it.quantity ?? 0}</div>
                 </div>
-                <div className="text-sm font-medium">{THB((it.total ?? it.price ?? 0) * (it.quantity ?? 1))}</div>
+                <div className="text-right text-xs sm:text-sm">
+                  <div className="font-medium">x{it.quantity ?? 0}</div>
+                </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-xs text-muted-foreground"><CircleAlert className="h-3.5 w-3.5" />No items found.</div>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <CircleAlert className="h-3.5 w-3.5" />No items found.
+          </div>
         )}
       </div>
     );
-  }
+  };
 
-  // --- MODIFIED: แก้ไข ItemPreviewChips ให้แสดง size และ dot ---
-  function ItemPreviewChips({ order }: { order: Order }) {
-    const { items, loading } = useOrderItems(order);
-    if (loading || items.length === 0) return null;
-
-    const list = items.slice(0, 2);
-    const more = Math.max(0, items.length - list.length);
-
-    return (
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <Tags className="h-3.5 w-3.5 text-muted-foreground" />
-        {list.map((it, i) => (
-          <span key={i} className="text-[11px] rounded-full border bg-background px-2 py-0.5">
-            {it.name} {it.specification && `(${it.specification})`} {it.dotCode && `· ${it.dotCode}`} ×{it.quantity ?? 0}
-          </span>
-        ))}
-        {more > 0 && <span className="text-[11px] rounded-full border bg-background px-2 py-0.5">+{more} more</span>}
-      </div>
-    );
-  }
-
-  function OrderCard({ order, role }: { order: Order; role: 'buyer' | 'seller' }) {
-    const created = order.createdAt ? new Date(order.createdAt).toLocaleString() : null;
-    const [open, setOpen] = useState(false);
+  const OrderCard = ({ order, role, selected }: { order: Order; role: 'buyer' | 'seller'; selected?: boolean }) => {
+    const created = order.createdAt?.toDate?.() ?? new Date();
+    const isOpen = !!expandedOrders[order.id!];
+    const isPendingThis = pendingId === order.id && isAnyPending;
 
     return (
       <motion.div
@@ -418,40 +480,54 @@ export default function TransferRequestsView({
         initial={{ opacity: 0, y: 8 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0, y: -8 }}
+        whileHover={{ y: -2 }}
         transition={{ duration: 0.2 }}
-        className="group p-3 sm:p-4 rounded-2xl border bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60 shadow-sm hover:shadow-md transition-all"
+        className={`group p-3 sm:p-4 rounded-2xl border bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60 shadow-sm hover:shadow-md transition-all ${selected ? 'ring-2 ring-primary/60' : ''}`}
       >
         <div className="grid grid-cols-[56px_1fr_auto] items-start gap-3 sm:gap-4">
-          <div className="flex items-center justify-center h-full pt-1">
+          <div className="flex items-center justify-center h-full pt-1 opacity-90">
             <TransferStatusAnimator status={order.status} />
           </div>
           <div className="min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-semibold text-primary">#{order.id?.slice?.(0, 8) ?? order.id}</span>
               <StatusBadge status={order.status} />
+              {isPendingThis && (
+                <span className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                  <RefreshCw className="h-3.5 w-3.5 animate-spin" /> Processing...
+                </span>
+              )}
             </div>
             <div className="mt-1.5 text-sm text-muted-foreground flex flex-col gap-1.5">
               <div className="flex flex-wrap items-center gap-x-3 gap-y-1">
                 <span className="inline-flex items-center gap-1.5">
                   <ArrowLeftRight className="h-3.5 w-3.5" />
-                  <span>{order.buyerBranchName ?? order.buyerBranchId} → {order.sellerBranchName ?? order.sellerBranchId}</span>
+                  <span>
+                    {role === 'buyer' ? <b>You</b> : order.buyerBranchName}
+                    <span className="mx-1">→</span>
+                    {role === 'seller' ? <b>You</b> : order.sellerBranchName}
+                  </span>
                 </span>
-                <Separator orientation="vertical" className="h-4" />
-                <span>Total: <span className="font-medium text-foreground">{THB(order.totalAmount || 0)}</span></span>
               </div>
-              <ItemPreviewChips order={order} />
+              <div className="text-xs text-muted-foreground inline-flex items-center gap-1.5">
+                <Tags className="h-3.5 w-3.5" />
+                <span>{(order as any).itemCount ?? (order.items?.length || 0)} items</span>
+              </div>
             </div>
             <ProgressRail status={order.status} />
-            {created && (
-              <div className="mt-1.5 text-xs text-muted-foreground inline-flex items-center gap-1.5">
-                <Clock3 className="h-3 w-3" />
-                Created on {created}
-              </div>
-            )}
+            <div className="mt-1.5 text-xs text-muted-foreground inline-flex items-center gap-1.5">
+              <Clock3 className="h-3 w-3" />
+              {format(created, 'dd MMM, HH:mm')} ({formatDistanceToNow(created, { addSuffix: true })})
+            </div>
             <div className="mt-3">
-              <Button variant="ghost" size="sm" className="px-2 py-1 h-auto text-xs" onClick={() => setOpen((v) => !v)}>
-                <ChevronDown className={`mr-1 h-4 w-4 transition-transform ${open ? 'rotate-180' : ''}`} />
-                {open ? 'Hide Details' : 'View Items'}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="px-2 py-1 h-auto text-xs transition-transform active:scale-95"
+                onClick={() => toggleExpanded(order.id!)}
+              >
+                <ChevronDown className={`mr-1 h-4 w-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
+                {isOpen ? 'Hide Details' : 'View Items'}
               </Button>
             </div>
           </div>
@@ -460,7 +536,7 @@ export default function TransferRequestsView({
           </div>
         </div>
         <AnimatePresence initial={false}>
-          {open && (
+          {isOpen && (
             <motion.div
               initial={{ height: 0, opacity: 0, marginTop: 0 }}
               animate={{ height: 'auto', opacity: 1, marginTop: '12px' }}
@@ -473,28 +549,95 @@ export default function TransferRequestsView({
         </AnimatePresence>
       </motion.div>
     );
-  }
+  };
 
-  function OrdersSection({ title, icon: Icon, description, orders, role, emptyText }: { title: string; icon: React.ComponentType<any>; description: string; orders: Order[]; role: 'buyer' | 'seller'; emptyText: string; }) {
+  // ====== Group helpers for GroupedVirtuoso ======
+  const buildGrouped = (orders: Order[]) => {
+    const groups: { label: string; count: number }[] = [];
+    const items: Order[] = [];
+    STATUS_ORDER.forEach((st) => {
+      const chunk = orders.filter((o) => o.status === st || (st === 'received' && o.status === 'delivered'));
+      if (chunk.length) {
+        groups.push({ label: STATUS_META[st].label, count: chunk.length });
+        items.push(...chunk);
+      }
+    });
+    return { groups, items };
+  };
+
+  // ====== Orders sections ======
+  const OrdersSection = ({
+    title,
+    icon: Icon,
+    description,
+    orders,
+    role,
+    emptyText,
+    pendingCount,
+    selectedIndex,
+    onMoveFocus,
+  }: {
+    title: string;
+    icon: React.ComponentType<any>;
+    description: string;
+    orders: Order[];
+    role: 'buyer' | 'seller';
+    emptyText: string;
+    pendingCount: number;
+    selectedIndex: number;
+    onMoveFocus: (idx: number) => void;
+  }) => {
+    const { groups, items } = useMemo(() => buildGrouped(orders), [orders]);
+    const height = Math.max(360, Math.min(720, typeof window !== 'undefined' ? window.innerHeight - 320 : 560));
+
+    useEffect(() => {}, [onMoveFocus]);
+
     return (
       <Card className="rounded-2xl shadow-sm border-muted/60">
         <CardHeader className="pb-3">
           <CardTitle className="flex items-center gap-2">
             <Icon className="h-5 w-5" /> {title}
+            {pendingCount > 0 && <Badge className="bg-blue-500 hover:bg-blue-500">{pendingCount}</Badge>}
           </CardTitle>
           <CardDescription>{description}</CardDescription>
         </CardHeader>
         <CardContent className="p-0">
           {loading ? (
             <div className="space-y-2 p-4">
-              {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-28 w-full rounded-xl" />)}
+              {Array.from({ length: 2 }).map((_, i) => (
+                <Skeleton key={i} className="h-36 w-full rounded-xl" />
+              ))}
             </div>
           ) : orders.length ? (
-            <div className="p-2 sm:p-3 space-y-2">
-              <AnimatePresence initial={false}>
-                {orders.map((o: any) => <OrderCard key={o.id} order={o} role={role} />)}
-              </AnimatePresence>
-            </div>
+            viewMode === 'list' ? (
+              <div className="p-2 sm:p-3 overflow-hidden rounded-b-2xl">
+                <GroupedVirtuoso
+                  style={{ height }}
+                  groupCounts={groups.map((g) => g.count)}
+                  groupContent={(index) => (
+                    <div className="sticky top-0 z-10 bg-background/90 backdrop-blur px-2 py-1.5 text-xs font-semibold text-muted-foreground">
+                      {groups[index].label}
+                    </div>
+                  )}
+                  increaseViewportBy={{ top: 400, bottom: 800 }}
+                  itemContent={(index) => (
+                    <div className="px-2 sm:px-3 py-1">
+                      <OrderCard order={items[index]} role={role} selected={index === selectedIndex} />
+                    </div>
+                  )}
+                  atBottomThreshold={80}
+                  components={{ Footer: () => <div className="h-2" /> }}
+                />
+              </div>
+            ) : (
+              <div className="p-2 sm:p-3 overflow-hidden rounded-b-2xl">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {orders.map((o: any, i) => (
+                    <OrderCard key={o.id} order={o} role={role} selected={i === selectedIndex} />
+                  ))}
+                </div>
+              </div>
+            )
           ) : (
             <div className="p-10 text-center">
               <div className="mx-auto mb-3 h-16 w-16 rounded-2xl bg-muted flex items-center justify-center">
@@ -506,74 +649,161 @@ export default function TransferRequestsView({
         </CardContent>
       </Card>
     );
-  }
-
-  const totalOpen = useMemo(() => {
-    const all = [...buyerOrders, ...sellerOrders];
-    return all.filter((o: any) => !['received', 'delivered', 'rejected', 'cancelled'].includes(o.status)).length;
-  }, [buyerOrders, sellerOrders]);
-
-  const Header = (
-    <div className="relative overflow-hidden rounded-2xl border bg-card/50 p-4 sm:p-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-bold tracking-tight">Transfer Requests</h1>
-          <p className="text-muted-foreground">
-            Branch: <span className="font-medium">{myBranchName || myBranchId || '-'}</span>
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2 text-xs">
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1">
-              <Info className="h-3.5 w-3.5" />
-              <span>Auto-refresh every 10s</span>
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full bg-muted px-2.5 py-1">
-              <PackageCheck className="h-3.5 w-3.5" />
-              <span>Open requests: {totalOpen}</span>
-            </span>
-          </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <div className="hidden sm:flex rounded-full border bg-background p-0.5">
-            {(['all', 'requested', 'approved', 'shipped', 'received'] as const).map((k) => (
-              <button
-                key={k}
-                onClick={() => setStatusFilter(k as any)}
-                className={`px-3 py-1.5 text-xs rounded-full transition-colors ${statusFilter === k ? 'bg-primary text-primary-foreground shadow-sm' : 'text-muted-foreground hover:bg-muted/50'}`}
-              >
-                {k === 'all' ? 'All' : STATUS_META[k as OrderStatus].label}
-              </button>
-            ))}
-          </div>
-          <Button variant="outline" size="sm" onClick={() => { buyerQ.refetch(); sellerQ.refetch(); }} disabled={loading}>
-            <RefreshCw className={`mr-2 h-4 w-4 ${loading ? 'animate-spin' : ''}`} />
-            Refresh
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
+  };
 
   return (
-    <div className="space-y-6">
-      {Header}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-        <OrdersSection
-          title="My Outgoing Requests (Buyer)"
-          icon={ClipboardList}
-          description={`Requests sent from ${myBranchName || myBranchId}`}
-          orders={filteredBuyer}
-          role="buyer"
-          emptyText="No outgoing requests found."
-        />
-        <OrdersSection
-          title="Incoming Requests (Seller)"
-          icon={Building2}
-          description={`Requests sent to ${myBranchName || myBranchId}`}
-          orders={filteredSeller}
-          role="seller"
-          emptyText="No incoming requests found."
-        />
+    <TooltipProvider delayDuration={120}>
+      <div className="space-y-6">
+        {/* Header */}
+        <div className="relative z-50 overflow-hidden rounded-2xl border bg-gradient-to-br from-background via-background to-muted p-4 sm:p-6">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <h1 className="text-2xl font-bold tracking-tight">Transfer Requests</h1>
+              <p className="text-muted-foreground">
+                Manage real-time transfer requests for{' '}
+                <span className="font-medium">{myBranchName || myBranchId}</span>
+              </p>
+            </div>
+            <div className="hidden sm:flex items-center gap-2">
+              <Badge variant="outline" className="rounded-full">Outgoing: {buyerPendingCount}</Badge>
+              <Badge variant="outline" className="rounded-full">Incoming: {sellerPendingCount}</Badge>
+            </div>
+          </div>
+          {/* Toolbar */}
+          <div className="mt-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-2">
+            <div className="flex items-center gap-2">
+              <input
+                ref={searchRef}
+                aria-label="Search orders"
+                placeholder="Search order id / branch..."
+                value={searchQ}
+                onChange={(e) => setSearchQ(e.target.value)}
+                className="w-full h-9 rounded-lg border bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-primary/40"
+              />
+            </div>
+            <div>
+              <select
+                aria-label="Filter status"
+                className="w-full h-9 rounded-lg border bg-background px-3 text-sm"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+              >
+                <option value="all">All Status</option>
+                <option value="requested">Requested</option>
+                <option value="approved">Approved</option>
+                <option value="shipped">Shipped</option>
+                <option value="received">Received</option>
+                <option value="rejected">Rejected</option>
+                <option value="cancelled">Cancelled</option>
+              </select>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className="w-full h-9 rounded-lg border bg-background px-3 text-sm" />
+              <span className="text-xs text-muted-foreground">to</span>
+              <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)} className="w-full h-9 rounded-lg border bg-background px-3 text-sm" />
+            </div>
+            <div className="w-full">
+              {/* Segmented control - overflow safe */}
+              <div className="flex rounded-lg border overflow-hidden">
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setActivePane('outgoing')}
+                  variant={activePane === 'outgoing' ? 'default' : 'ghost'}
+                  className="h-9 rounded-none flex-1"
+                >
+                  Outgoing
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setActivePane('incoming')}
+                  variant={activePane === 'incoming' ? 'default' : 'ghost'}
+                  className="h-9 rounded-none flex-1"
+                >
+                  Incoming
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => setActivePane('both')}
+                  variant={activePane === 'both' ? 'default' : 'ghost'}
+                  className="h-9 rounded-none hidden xl:inline-flex"
+                >
+                  Both
+                </Button>
+              </div>
+            </div>
+            <div className="lg:col-span-4 flex items-center justify-end gap-2 mt-2">
+              <Button variant={viewMode === 'list' ? 'default' : 'outline'} size="sm" onClick={() => setViewMode('list')}>List</Button>
+              <Button variant={viewMode === 'board' ? 'default' : 'outline'} size="sm" onClick={() => setViewMode('board')}>Board</Button>
+            </div>
+          </div>
+        </div>
+
+        <div className={`relative z-10 grid grid-cols-1 gap-6 items-start ${activePane === 'both' ? 'lg:grid-cols-2' : ''}`}>
+          {(activePane === 'both' || activePane === 'outgoing') && (
+            <OrdersSection
+              title="My Outgoing Requests"
+              icon={ClipboardList}
+              description={`Requests sent from your branch`}
+              orders={filteredBuyer}
+              role="buyer"
+              emptyText="No outgoing requests found."
+              pendingCount={buyerPendingCount}
+              selectedIndex={focusedIdxOutgoing}
+              onMoveFocus={setFocusedIdxOutgoing}
+            />
+          )}
+          {(activePane === 'both' || activePane === 'incoming') && (
+            <OrdersSection
+              title="Incoming Requests"
+              icon={Building2}
+              description={`Requests sent to your branch`}
+              orders={filteredSeller}
+              role="seller"
+              emptyText="No incoming requests found."
+              pendingCount={sellerPendingCount}
+              selectedIndex={focusedIdxIncoming}
+              onMoveFocus={setFocusedIdxIncoming}
+            />
+          )}
+        </div>
+
+        {/* Reason Modal */}
+        <AlertDialog open={modal.open} onOpenChange={(o) => setModal({ ...modal, open: o })}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Confirm Action</AlertDialogTitle>
+              <AlertDialogDescription>
+                This will {modal.type} the request. This action cannot be undone. Please provide a reason.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <Textarea
+              placeholder={`Reason for ${modal.type ?? ''}...`}
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              className="min-h-[96px]"
+            />
+            <AlertDialogFooter>
+              <AlertDialogCancel>Back</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  if (!reason.trim()) return;
+                  if (!modal.orderId || !modal.type) return;
+                  if (modal.type === 'reject') rejectMut.mutate({ id: modal.orderId, reason });
+                  if (modal.type === 'cancel') cancelMut.mutate({ id: modal.orderId, reason });
+                  setModal({ open: false, type: null, orderId: null });
+                  setReason('');
+                }}
+                disabled={!reason.trim() || isAnyPending}
+              >
+                Confirm
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </div>
-    </div>
+    </TooltipProvider>
   );
 }

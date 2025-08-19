@@ -23,14 +23,13 @@ import { Textarea } from '@/components/ui/textarea';
 
 import { Boxes, ChevronRight, Plus, Search, Trash2 } from 'lucide-react';
 import useDebounce from '@/hooks/useDebounce';
-import { toast } from 'sonner'; // <-- ใช้ sonner แทน useToast
+import { toast } from 'sonner';
 
-function priceOf(dot: { promoPrice?: number | null; basePrice?: number }) {
-  return (dot.promoPrice ?? undefined) !== undefined && dot.promoPrice !== null ? dot.promoPrice! : (dot.basePrice ?? 0);
-}
+// --- REMOVED: priceOf function is no longer needed ---
 
 type StoresMap = Record<string, string>;
-type DraftLine = { product: GroupedProduct; variant: SizeVariant; dotCode: string; availQty: number; qty: number; unitPrice: number; };
+// --- REMOVED: unitPrice from DraftLine ---
+type DraftLine = { product: GroupedProduct; variant: SizeVariant; dotCode: string; availQty: number; qty: number; };
 
 type Props = {
   defaultSellerId?: string;
@@ -57,7 +56,7 @@ export default function TransferCreatePanel({
   const [note, setNote] = useState('');
   const [loading, setLoading] = useState(false);
 
-  const totalAmount = useMemo(() => draft.reduce((s, l) => s + l.unitPrice * l.qty, 0), [draft]);
+  // --- REMOVED: totalAmount is no longer needed ---
 
   useEffect(() => {
     (async () => {
@@ -93,12 +92,11 @@ export default function TransferCreatePanel({
   }, [inventory, debouncedSearch]);
 
   function addLine(p: GroupedProduct, v: SizeVariant, dotCode: string, availQty: number) {
-    const dot = v.dots.find(d => d.dotCode === dotCode)!;
-    const unitPrice = priceOf(dot);
     setDraft(prev => {
       const idx = prev.findIndex(l => l.product.id === p.id && l.variant.variantId === v.variantId && l.dotCode === dotCode);
       if (idx >= 0) { const next = [...prev]; next[idx] = { ...next[idx], qty: Math.min(next[idx].qty + 1, availQty) }; return next; }
-      return [...prev, { product: p, variant: v, dotCode, availQty, qty: 1, unitPrice }];
+      // --- REMOVED: unitPrice from new draft line ---
+      return [...prev, { product: p, variant: v, dotCode, availQty, qty: 1 }];
     });
   }
   const removeLine = (i: number) => setDraft(d => d.filter((_, idx) => idx !== i));
@@ -109,14 +107,25 @@ export default function TransferCreatePanel({
       if (!sellerId || !buyerId) throw new Error('กรุณาเลือกสาขาให้ครบ');
       if (sellerId === buyerId) throw new Error('สาขาต้นทางและปลายทางต้องต่างกัน');
       if (draft.length === 0) throw new Error('ยังไม่ได้เลือกสินค้า');
+
+      // --- REMOVED: price from OrderItem mapping ---
       const items: OrderItem[] = draft.map(l => ({
-        productId: l.product.id, productName: l.product.name, specification: l.variant.specification,
-        dotCode: l.dotCode, quantity: l.qty, unitPrice: l.unitPrice, totalPrice: l.unitPrice * l.qty, variantId: l.variant.variantId,
+        productId: l.product.id,
+        productName: l.product.name,
+        specification: l.variant.specification,
+        dotCode: l.dotCode,
+        quantity: l.qty,
+        variantId: l.variant.variantId,
       }));
+
+      // --- REMOVED: totalAmount and status from createOrder call ---
       const id = await OrderService.createOrder({
-        buyerBranchId: buyerId, buyerBranchName: stores[buyerId] || buyerId,
-        sellerBranchId: sellerId, sellerBranchName: stores[sellerId] || sellerId,
-        items, totalAmount, status: 'requested', notes: note || undefined,
+        buyerBranchId: buyerId,
+        buyerBranchName: stores[buyerId] || buyerId,
+        sellerBranchId: sellerId,
+        sellerBranchName: stores[sellerId] || sellerId,
+        items,
+        notes: note || undefined,
       });
       toast.success('Created', { description: `Order #${id.slice(0, 8)} was created.` });
       setDraft([]); setNote('');
@@ -197,7 +206,7 @@ export default function TransferCreatePanel({
                               <div>
                                 <div className="text-sm font-medium">DOT {d.dotCode}</div>
                                 <div className="text-xs text-muted-foreground">In stock: {d.qty}</div>
-                                <div className="text-xs text-muted-foreground">Price: {Intl.NumberFormat().format(priceOf(d))}</div>
+                                {/* --- REMOVED: Price display --- */}
                               </div>
                               <Button size="sm" disabled={d.qty <= 0} onClick={() => addLine(p, v, d.dotCode, d.qty)}>
                                 <Plus className="mr-2 h-4 w-4" /> Add
@@ -228,20 +237,22 @@ export default function TransferCreatePanel({
             ) : (
               <>
                 <div className="rounded-lg border">
+                  {/* --- CHANGE: Updated grid columns for cart items (removed price) --- */}
                   <div className="hidden grid-cols-12 gap-2 px-4 py-2 text-xs text-muted-foreground md:grid">
-                    <div className="col-span-5">Product</div><div className="col-span-2">DOT</div>
-                    <div className="col-span-2">Qty (avail)</div><div className="col-span-2">Unit</div><div className="col-span-1"></div>
+                    <div className="col-span-6">Product</div>
+                    <div className="col-span-2">DOT</div>
+                    <div className="col-span-3">Qty (avail)</div>
+                    <div className="col-span-1"></div>
                   </div>
                   <div className="divide-y">
                     {draft.map((l, i) => (
                       <div key={`${l.product.id}-${l.variant.variantId}-${l.dotCode}`} className="grid grid-cols-1 gap-2 px-4 py-3 md:grid-cols-12 md:items-center">
-                        <div className="md:col-span-5"><div className="font-medium">{l.product.name}</div><div className="text-xs text-muted-foreground">{l.variant.specification}</div></div>
+                        <div className="md:col-span-6"><div className="font-medium">{l.product.name}</div><div className="text-xs text-muted-foreground">{l.variant.specification}</div></div>
                         <div className="text-sm md:col-span-2">DOT {l.dotCode}</div>
-                        <div className="md:col-span-2 flex items-center gap-2">
+                        <div className="md:col-span-3 flex items-center gap-2">
                           <Input type="number" min={1} max={l.availQty} value={l.qty} onChange={(e) => setQty(i, Number(e.target.value))} className="h-8 w-24" />
                           <span className="text-xs text-muted-foreground">/ {l.availQty}</span>
                         </div>
-                        <div className="md:col-span-2">{Intl.NumberFormat().format(l.unitPrice)}</div>
                         <div className="md:col-span-1 flex justify-end"><Button size="icon" variant="ghost" onClick={() => removeLine(i)}><Trash2 className="h-4 w-4" /></Button></div>
                       </div>
                     ))}
@@ -255,10 +266,7 @@ export default function TransferCreatePanel({
 
                 <Separator />
 
-                <div className="flex items-center justify-between">
-                  <div className="text-sm text-muted-foreground">Total amount</div>
-                  <div className="text-xl font-semibold">{Intl.NumberFormat().format(totalAmount)}</div>
-                </div>
+                {/* --- REMOVED: Total amount display --- */}
 
                 <div className="flex justify-end">
                   <AlertDialog>

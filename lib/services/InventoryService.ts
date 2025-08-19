@@ -105,9 +105,28 @@ export type OrderItem = {
   specification: string;
   dotCode: string;
   quantity: number;
-  unitPrice: number;
-  totalPrice: number;
   variantId: string;
+  // --- CHANGE: Make price optional ---
+  unitPrice?: number;
+  totalPrice?: number;
+};
+
+export type Order = {
+  id?: string;
+  orderNumber?: string;
+  buyerBranchId: string;
+  buyerBranchName: string;
+  sellerBranchId: string;
+  sellerBranchName: string;
+  status: OrderStatus;
+  items: OrderItem[];
+  // --- CHANGE: Make totalAmount optional and add itemCount ---
+  totalAmount?: number;
+  itemCount: number;
+  notes?: string;
+  createdAt?: Timestamp;
+  updatedAt?: Timestamp;
+  cancelReason?: string;
 };
 
 // Current + legacy (confirmed, delivered) for compatibility
@@ -120,22 +139,6 @@ export type OrderStatus =
   | 'cancelled'
   | 'confirmed' // legacy -> treat as approved
   | 'delivered'; // legacy -> treat as shipped/received in old UIs
-
-export type Order = {
-  id?: string;
-  orderNumber?: string;
-  buyerBranchId: string;
-  buyerBranchName: string;
-  sellerBranchId: string;
-  sellerBranchName: string;
-  status: OrderStatus;
-  totalAmount: number;
-  notes?: string;
-  items: OrderItem[];
-  createdAt?: Timestamp;
-  updatedAt?: Timestamp;
-  cancelReason?: string;
-};
 
 export type StoreDoc = {
   branchName: string;
@@ -437,11 +440,14 @@ export const InventoryService = {
         updatedAt: serverTimestamp(),
       });
     } else if (init) {
-      await updateDoc(dRef, {
-        ...(init.qty !== undefined ? { qty: Math.max(0, init.qty) } : {}),
-        ...(init.promoPrice !== undefined ? { promoPrice: init.promoPrice } : {}),
-        updatedAt: serverTimestamp(),
-      });
+      const updatePayload: any = { updatedAt: serverTimestamp() };
+      if (init.qty !== undefined) {
+        updatePayload.qty = Math.max(0, init.qty);
+      }
+      if (init.promoPrice !== undefined) {
+        updatePayload.promoPrice = init.promoPrice;
+      }
+      await updateDoc(dRef, updatePayload);
     }
   },
 
@@ -458,7 +464,7 @@ export const InventoryService = {
     const products: GroupedProduct[] = [];
 
     for (const brandDoc of brandsSnap.docs) {
-      const brandId = brandDoc.id; // ใช้ id ที่มีอยู่จริงใน DB
+      const brandId = brandDoc.id;
       const brandData = brandDoc.data() as any;
       const brandName = brandData.brandName || brandId;
 
@@ -827,7 +833,6 @@ export const NotificationService = {
     orderId: string;
   }) {
     try {
-      // Do not create a notification for the branch that initiated the action
       if (!payload.branchId) return;
 
       await addDoc(collection(db, 'notifications'), {
@@ -851,23 +856,26 @@ export const OrderService = {
     sellerBranchId: string;
     sellerBranchName: string;
     items: OrderItem[];
-    totalAmount: number;
-    status: OrderStatus; // usually 'requested'
     notes?: string;
   }): Promise<string> {
+    const itemCount = payload.items.reduce((sum, item) => sum + item.quantity, 0);
+
     const orderData = {
       ...payload,
+      items: payload.items.map(({ unitPrice, totalPrice, ...item }) => item),
+      totalAmount: 0,
+      itemCount: itemCount,
+      status: 'requested' as OrderStatus,
       orderNumber: `TR-${Date.now().toString().slice(-6)}`,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
     const ref = await addDoc(collection(db, 'orders'), orderData);
 
-    // >> [ADD] Create notification for the seller
     await NotificationService.createNotification({
       branchId: payload.sellerBranchId,
       title: 'New Transfer Request',
-      message: `Request from ${payload.buyerBranchName} for order #${ref.id.slice(0, 6)}`,
+      message: `Request from ${payload.buyerBranchName} for ${itemCount} items.`,
       orderId: ref.id,
       link: `/?view=transfer_requests`,
     });
@@ -926,7 +934,6 @@ export const OrderService = {
     }
     await updateDoc(ref, { status: 'approved', updatedAt: serverTimestamp() });
 
-    // >> [ADD] Notify buyer that the request was approved
     await NotificationService.createNotification({
       branchId: order.buyerBranchId,
       title: 'Request Approved',
@@ -956,7 +963,6 @@ export const OrderService = {
       updatedAt: serverTimestamp(),
     });
 
-    // >> [ADD] Notify buyer that the request was rejected
     await NotificationService.createNotification({
       branchId: order.buyerBranchId,
       title: 'Request Rejected',
@@ -974,14 +980,11 @@ export const OrderService = {
 
     const order = orderSnap.data() as Order;
 
-    // อนุญาตเฉพาะ approved (หรือ legacy confirmed)
     if (order.status !== 'approved' && order.status !== 'confirmed') {
-      // ถ้าเคย shipped ไปแล้ว ให้ไม่ทำซ้ำ
       if (order.status === 'shipped' || order.status === 'delivered') return;
       throw new Error('Can only ship approved orders');
     }
 
-    // ตัดสต็อกทีละรายการด้วย runTransaction เพื่อเช็คคงเหลือ
     for (const item of order.items) {
       const parsed = InventoryService.parseProductInfo(
         { id: item.productId } as any,
@@ -990,7 +993,6 @@ export const OrderService = {
         item.dotCode
       );
 
-      // ใช้ id ที่ canonical ใน "สาขาผู้ขาย"
       const { brandId: bId, modelId: mId } = await resolveCanonicalIds(
         order.sellerBranchId,
         parsed.brandId,
@@ -1025,7 +1027,6 @@ export const OrderService = {
         });
       });
 
-      // log transfer_out (นอก transaction)
       await addDoc(collection(db, 'stockMovements'), {
         branchId: order.sellerBranchId,
         orderId,
@@ -1040,10 +1041,8 @@ export const OrderService = {
       });
     }
 
-    // อัปเดตสถานะ → shipped
     await updateDoc(ref, { status: 'shipped', updatedAt: serverTimestamp() });
 
-    // >> [ADD] Notify buyer that the order has been shipped
     await NotificationService.createNotification({
       branchId: order.buyerBranchId,
       title: 'Order Shipped',
@@ -1061,60 +1060,64 @@ export const OrderService = {
 
     const order = orderSnap.data() as Order;
 
-    // อนุญาตเฉพาะจาก shipped (หรือ legacy delivered) -> received
     if (order.status !== 'shipped' && order.status !== 'delivered') {
-      // ถ้าเคยรับไปแล้ว ไม่ต้องทำซ้ำ
       if (order.status === 'received') return;
       throw new Error('Can only receive shipped orders');
     }
 
     for (const item of order.items) {
-      const infoSellerSide = InventoryService.parseProductInfo(
-        { id: item.productId } as any,
-        order.sellerBranchId,
+      const nameParts = item.productName.split(' ');
+      const brandName = nameParts[0] || 'Unknown';
+      const modelName = nameParts.slice(1).join(' ') || 'Unknown';
+      
+      const specMatch = item.specification.match(/^(.*?)\s*\((.*?)\)$/);
+      let size = item.specification.trim();
+      let loadIndex = '';
+      if (specMatch) {
+          size = specMatch[1].trim();
+          loadIndex = specMatch[2].trim();
+      }
+
+      const { brandId, modelId } = await InventoryService.ensureModelDoc(
+          order.buyerBranchId,
+          brandName,
+          modelName
+      );
+
+      await InventoryService.ensureVariantPath(
+        order.buyerBranchId,
+        brandId,
+        modelId,
+        item.variantId,
+        { 
+          size: size, 
+          loadIndex: loadIndex,
+          basePrice: 0, 
+        }
+      );
+      
+      await InventoryService.ensureDotDoc(
+        order.buyerBranchId,
+        brandId,
+        modelId,
         item.variantId,
         item.dotCode
       );
 
-      // ใช้ canonical ของฝั่งผู้ขายเป็นต้นแบบให้ผู้รับ (ล็อกให้เป็น MICHELIN เดียวกัน)
-      const { brandId: bId, modelId: mId } = await resolveCanonicalIds(
-        order.sellerBranchId,
-        infoSellerSide.brandId,
-        infoSellerSide.modelId
-      );
-
-      // สร้างเส้นทาง variant/dot ในสาขาผู้รับถ้ายังไม่มี
-      await InventoryService.ensureVariantPath(
-        order.buyerBranchId,
-        bId,
-        mId,
-        item.variantId
-      );
-      await InventoryService.ensureDotDoc(
-        order.buyerBranchId,
-        bId,
-        mId,
-        item.variantId,
-        item.dotCode,
-        { qty: 0 }
-      );
-
-      // เพิ่มสต็อกให้ผู้รับ
       await InventoryService.adjustDotQuantity(
         order.buyerBranchId,
-        bId,
-        mId,
+        brandId,
+        modelId,
         item.variantId,
         item.dotCode,
         item.quantity
       );
 
-      // log transfer_in
       await addDoc(collection(db, 'stockMovements'), {
         branchId: order.buyerBranchId,
         orderId,
-        brand: bId,
-        model: mId,
+        brand: brandId,
+        model: modelId,
         variantId: item.variantId,
         dotCode: item.dotCode,
         qtyChange: item.quantity,
@@ -1124,10 +1127,8 @@ export const OrderService = {
       });
     }
 
-    // อัปเดตสถานะ → received
     await updateDoc(ref, { status: 'received', updatedAt: serverTimestamp() });
     
-    // >> [ADD] Notify seller that the order has been received
     await NotificationService.createNotification({
       branchId: order.sellerBranchId,
       title: 'Order Received',
@@ -1139,7 +1140,6 @@ export const OrderService = {
 
   /** alias เดิม: deliverTransfer = shipped (legacy) */
   async deliverTransfer(orderId: string): Promise<void> {
-    // เพื่อความเข้ากันได้เก่า ให้ map ไปที่ ship
     return this.shipTransfer(orderId);
   },
 
@@ -1159,7 +1159,6 @@ export const OrderService = {
       updatedAt: serverTimestamp(),
     });
     
-    // >> [ADD] Notify seller that the request was cancelled
     await NotificationService.createNotification({
       branchId: order.sellerBranchId,
       title: 'Request Cancelled',
@@ -1177,7 +1176,7 @@ export default {
   StoreService,
   InventoryService,
   OrderService,
-  NotificationService, // Add NotificationService to default export
+  NotificationService,
   // utils
   slugifyId,
   ensureArray,
