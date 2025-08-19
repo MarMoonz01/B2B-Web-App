@@ -862,8 +862,9 @@ export default function MyInventory({
       </div>
     );
   
+    // >> [FIX] Removed `sticky` from FilterBar to be part of a larger sticky container
     const FilterBar = (
-      <div className="border-b bg-muted/20 p-4 md:p-6 sticky top-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-white/60">
+      <div className="border-b bg-muted/20 p-4 md:p-6 backdrop-blur supports-[backdrop-filter]:bg-white/60">
         <div className="w-full space-y-4">
           {/* Search & Sort */}
           <div className="flex items-center gap-3 md:gap-4 flex-wrap">
@@ -1008,9 +1009,10 @@ export default function MyInventory({
     // ---------- Table (expandable rows) ----------
     const GRID_COLS = 'minmax(420px,1.2fr) minmax(220px,0.8fr) 120px 160px 160px';
   
+    // >> [FIX] Removed `sticky` and `top` properties. It will now stack naturally inside the new sticky container.
     const TableHeader = (
       <div
-        className="grid gap-4 px-4 py-3 text-xs text-muted-foreground min-w-[1080px] bg-slate-50/70 border-b sticky top-[148px] z-10"
+        className="grid gap-4 px-4 py-3 text-xs text-muted-foreground min-w-[1080px] bg-slate-50/70 border-b"
         style={{ gridTemplateColumns: GRID_COLS }}
       >
         <div>Product</div>
@@ -1030,7 +1032,7 @@ export default function MyInventory({
     ) : paginatedRows.length === 0 ? (
       <div className="p-10 text-center text-muted-foreground">No products found.</div>
     ) : (
-      <div>
+      <div className="bg-white">
         {paginatedRows.map((r) => {
           const chipsShown = r.dotChips.reduce((s, c) => s + c.qty, 0);
           const expanded = expandedKey === r.key;
@@ -1669,23 +1671,22 @@ export default function MyInventory({
 
   // ---------- Render ----------
   return (
-    <div className="w-full min-h-screen space-y-6 md:space-y-8">
+    <div className="w-full min-h-screen space-y-6 md:space-y-8 p-4 sm:p-6 md:p-8">
       {Header}
 
       {KPI}
 
-      {FilterBar}
+      {/* >> [RESTRUCTURED] The new sticky container for Filters and Table Header */}
+      <div className="sticky top-0 z-20">
+        {FilterBar}
+        {viewMode === 'table' && TableHeader}
+      </div>
 
-      {/* >> [FINAL FIX] The definitive structure to prevent overlap */}
-      <div className="w-full rounded-2xl border bg-white shadow-sm overflow-hidden flex flex-col">
+      {/* Main content area for the table body / grid / matrix */}
+      <div className="w-full rounded-b-2xl border-x border-b bg-white shadow-sm overflow-hidden flex flex-col">
         {/* Scrollable content area */}
         <div className="flex-grow overflow-x-auto">
-            {viewMode === 'table' && (
-                <>
-                    {TableHeader}
-                    {TableBody}
-                </>
-            )}
+            {viewMode === 'table' && TableBody}
             {viewMode === 'grid' && <div className="p-3 md:p-4">{GridView}</div>}
             {viewMode === 'matrix' && <div className="p-3 md:p-4">{MatrixView}</div>}
         </div>
@@ -2223,5 +2224,5 @@ export default function MyInventory({
         </DialogContent>
       </Dialog>
     </div>
-  ); 
+  );
 }
