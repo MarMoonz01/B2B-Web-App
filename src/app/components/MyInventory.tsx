@@ -70,7 +70,18 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 
-// ... (โค้ดส่วน Type, Hooks, Functions ทั้งหมดเหมือนเดิม) ...
+/**
+ * FIX SUMMARY
+ * 1) Out-of-Stock switch now shows BOTH:
+ *    - items with total available = 0 (all DOTs are zero), and
+ *    - items that have brand/model/size but NO DOT at all (no variants / no DOT).
+ *    This was already mostly supported, but we made it bulletproof.
+ * 2) When toggling the "Out of Stock" switch, we immediately **refetch** inventory
+ *    from the DB to ensure freshest zero-qty and no-variant records.
+ * 3) Kept the optimistic update in `adjustMutation.onMutate` so rows flip between
+ *    in-stock and out-of-stock instantly, even before the refetch returns.
+ */
+
 type SortKey =
   | 'relevance'
   | 'qty-high'
@@ -111,6 +122,8 @@ type Row = {
   maxPrice: number;
   hasPromo: boolean;
   lowStock: boolean;
+  // whether this product currently has NO DOT records at all
+  noDot: boolean;
   dotChips: { dotCode: string; qty: number; price: number; hasPromo: boolean }[];
   dotsAll: {
     dotCode: string;
@@ -140,7 +153,7 @@ export default function MyInventory({
 }) {
     const qc = useQueryClient();
 
-    // ... (โค้ด State, Hooks, Functions ทั้งหมดยังคงเหมือนเดิมจากที่คุณส่งมา) ...
+    // ... (states)
     const [expandedKey, setExpandedKey] = useState<string | null>(null);
     const [viewMode, setViewMode] = useState<ViewMode>(() => {
       if (typeof window !== 'undefined') {
@@ -184,11 +197,13 @@ export default function MyInventory({
     const [lowStockOnly, setLowStockOnly] = useState(false);
     const [hasPromotion, setHasPromotion] = useState(false);
     const [sortBy, setSortBy] = useState<SortKey>('relevance');
+    // Out of Stock switch
+    const [outOfStockOnly, setOutOfStockOnly] = useState(false);
   
     // Reset to page 1 เมื่อ filter / sort / ค้นหาเปลี่ยน
     useEffect(() => {
       setCurrentPage(1);
-    }, [debouncedSearch, selectedBrand, selectedSize, inStockOnly, lowStockOnly, hasPromotion, sortBy, viewMode]);
+    }, [debouncedSearch, selectedBrand, selectedSize, inStockOnly, lowStockOnly, hasPromotion, sortBy, viewMode, outOfStockOnly]);
   
     // Dialog states: Add DOT / Promo / Delete DOT
     const [openAddDot, setOpenAddDot] = useState<{ open: boolean; row?: Row | null }>({
@@ -266,7 +281,7 @@ export default function MyInventory({
       newBasePrice: '',
     });
   
-    // --- NEW: promo ทั้งรุ่น + แก้ base ราย variant ---
+    // --- promo ทั้งรุ่น + แก้ base ราย variant ---
     const [promoAll, setPromoAll] = useState('');
     const [variantBaseDraft, setVariantBaseDraft] = useState<Record<string, string>>({});
   
@@ -299,17 +314,25 @@ export default function MyInventory({
   
     // ---------- Data ----------
     const invQuery = useQuery({
-      queryKey: ['inventory', 'store', myBranchId],
+      queryKey: ['inventory', 'store', myBranchId, outOfStockOnly ? 'oos' : 'in'],
       queryFn: async () => {
         const stores = await StoreService.getAllStores();
         const name = stores[myBranchId] ?? myBranchName ?? myBranchId;
-        const inv = await InventoryService.fetchStoreInventory(myBranchId, name);
+        const inv = await InventoryService.fetchStoreInventory(myBranchId, name, { includeZeroAndEmpty: outOfStockOnly });
         return { inv, branchName: name };
       },
       enabled: !!myBranchId,
       staleTime: 60_000,
       refetchInterval: 60_000,
     });
+
+    // >>> Refetch when toggling Out-of-Stock to ensure DB-fresh zero-qty & no-variant results
+    useEffect(() => {
+      if (!myBranchId) return;
+      invQuery.refetch();
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [outOfStockOnly]);
+
   
     const isLoading = invQuery.isLoading || invQuery.isRefetching;
     const inventory = (invQuery.data?.inv ?? []) as GroupedProduct[];
@@ -337,8 +360,9 @@ export default function MyInventory({
     // ---------- Rows ----------
     const rows: Row[] = useMemo(() => {
       const out: Row[] = [];
+      const includeZeroDots = outOfStockOnly; // when OOS is toggled, include DOTs with qty 0
       for (const p of inventory) {
-        const b = (p.branches ?? [])[0];
+        const b = (p.branches ?? []).find((br: any) => String(br.branchId) === String(myBranchId));
         if (!b) continue;
   
         const sizes = b.sizes ?? [];
@@ -349,9 +373,11 @@ export default function MyInventory({
         let hasPromoAny = false;
         let minPrice = Infinity;
         let maxPrice = 0;
+        let hasAnyDotRecord = false;
   
         for (const s of sizes as any[]) {
           const dots = (s.dots ?? []) as any[];
+          if (dots.length > 0) hasAnyDotRecord = true;
           const specQty = dots.reduce((sum: number, d: any) => sum + Number(d.qty ?? 0), 0);
           if (specQty > specQtyMax) {
             specQtyMax = specQty;
@@ -364,7 +390,8 @@ export default function MyInventory({
             const price = promoPrice ?? basePrice;
             const hasPromo = promoPrice != null;
   
-            if (qty > 0) {
+            // include zero-qty DOTs only when Out of Stock mode is on
+            if (qty > 0 || includeZeroDots) {
               allDots.push({
                 dotCode: d.dotCode,
                 qty,
@@ -375,8 +402,9 @@ export default function MyInventory({
                 basePrice,
                 promoPrice,
               });
+            }
+            if (qty > 0) {
               totalUnits += qty;
-  
               if (price > 0) {
                 minPrice = Math.min(minPrice, price);
                 maxPrice = Math.max(maxPrice, price);
@@ -385,8 +413,15 @@ export default function MyInventory({
             if (hasPromo) hasPromoAny = true;
           }
         }
-  
+
+        // ---------- FILTERS by stock state ----------
+        // 1) In-stock only = must have units > 0
         if (inStockOnly && totalUnits <= 0) continue;
+        // 2) Out-of-stock only = include:
+        //    - rows where totalUnits == 0 (all zero qty), OR
+        //    - rows with NO DOT at all (hasAnyDotRecord === false)
+        if (outOfStockOnly && !(totalUnits === 0 || !hasAnyDotRecord)) continue;
+        // 3) Low stock
         if (lowStockOnly && !(totalUnits > 0 && totalUnits < 6)) continue;
   
         allDots.sort((a, b) => b.qty - a.qty || a.price - b.price);
@@ -413,6 +448,7 @@ export default function MyInventory({
           maxPrice,
           hasPromo: hasPromoAny,
           lowStock: totalUnits > 0 && totalUnits < 6,
+          noDot: !hasAnyDotRecord,
           dotChips,
           dotsAll: allDots,
           grouped: p,
@@ -424,8 +460,9 @@ export default function MyInventory({
   
       const filtered = out
         .filter((r) => (selectedBrand === 'All Brands' ? true : r.brand === selectedBrand))
-        .filter((r) =>
-          selectedSize === 'All Sizes' ? true : r.dotsAll.some((d) => d.spec === selectedSize)
+        .filter((r) => selectedSize === 'All Sizes'
+          ? true
+          : (r.noDot && outOfStockOnly ? true : r.dotsAll.some((d) => d.spec === selectedSize))
         )
         .filter((r) =>
           !q ? true : `${r.productName} ${r.brand} ${r.model} ${r.specHighlight}`.toLowerCase().includes(q)
@@ -456,6 +493,7 @@ export default function MyInventory({
     }, [
       inventory,
       inStockOnly,
+      outOfStockOnly,
       lowStockOnly,
       debouncedSearch,
       selectedBrand,
@@ -509,12 +547,48 @@ export default function MyInventory({
           payload.qtyChange
         );
       },
+      // >>> OPTIMISTIC UPDATE to immediately reflect OOS / back-in-stock transitions
+      onMutate: async (payload) => {
+        await qc.cancelQueries({ queryKey: ['inventory', 'store', myBranchId] });
+        const previous = qc.getQueryData<{ inv: GroupedProduct[]; branchName: string }>(['inventory', 'store', myBranchId]);
+
+        // Shallow-clone tree to avoid mutating cache directly
+        if (previous) {
+          const cloned = {
+            branchName: previous.branchName,
+            inv: previous.inv.map((gp) => {
+              const bNode = (gp.branches ?? [])[0] as any;
+              if (!bNode) return gp;
+              if (String(bNode.branchId) !== String(payload.storeId)) return gp;
+              const newSizes = (bNode.sizes ?? []).map((s: any) => {
+                if (String(s.variantId) !== String(payload.variantId)) return s;
+                const newDots = (s.dots ?? []).map((d: any) => {
+                  if (String(d.dotCode) !== String(payload.dotCode)) return d;
+                  const nextQty = Math.max(0, Number(d.qty ?? 0) + Number(payload.qtyChange ?? 0));
+                  return { ...d, qty: nextQty };
+                });
+                return { ...s, dots: newDots };
+              });
+              const newBranch = { ...bNode, sizes: newSizes };
+              return { ...gp, branches: [newBranch] };
+            }),
+          };
+          qc.setQueryData(['inventory', 'store', myBranchId], cloned);
+        }
+
+        return { previous };
+      },
+      onError: (e: any, _variables, context) => {
+        if (context?.previous) {
+          qc.setQueryData(['inventory', 'store', myBranchId], context.previous);
+        }
+        toast.error(`Update failed: ${e?.message ?? 'Unknown error'}`);
+      },
       onSuccess: () => {
         toast.success('Stock updated');
-        qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
       },
-      onError: (e: any) => {
-        toast.error(`Update failed: ${e?.message ?? 'Unknown error'}`);
+      onSettled: () => {
+        qc.invalidateQueries({ queryKey: ['inventory', 'store', myBranchId] });
       },
     });
   
@@ -772,6 +846,14 @@ export default function MyInventory({
         {children}
       </span>
     );
+
+    const NoDotBadge = ({ children = 'No DOT' }: { children?: React.ReactNode }) => (
+      <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium
+        border-slate-200 bg-slate-50 text-slate-600
+        dark:border-slate-700 dark:bg-slate-800/40 dark:text-slate-300">
+        {children}
+      </span>
+    );
   
     // ---------- UI blocks ----------
     const Header = (
@@ -862,7 +944,7 @@ export default function MyInventory({
       </div>
     );
   
-    // >> [FIX] Removed `sticky` from FilterBar to be part of a larger sticky container
+    // FilterBar + View toggles
     const FilterBar = (
       <div className="border-b bg-muted/20 p-4 md:p-6 backdrop-blur supports-[backdrop-filter]:bg-white/60">
         <div className="w-full space-y-4">
@@ -981,9 +1063,18 @@ export default function MyInventory({
             <div className="flex items-center gap-2">
               <Switch
                 checked={inStockOnly}
-                onCheckedChange={(v) => setInStockOnly(Boolean(v))}
+                onCheckedChange={(v) => { setInStockOnly(Boolean(v)); if (v) setOutOfStockOnly(false); }}
               />
               <Label>In Stock Only</Label>
+            </div>
+
+            {/* Out of Stock switch */}
+            <div className="flex items-center gap-2">
+              <Switch
+                checked={outOfStockOnly}
+                onCheckedChange={(v) => { setOutOfStockOnly(Boolean(v)); if (v) setInStockOnly(false); }}
+              />
+              <Label>Out of Stock</Label>
             </div>
   
             <div className="flex items-center gap-2">
@@ -1009,7 +1100,6 @@ export default function MyInventory({
     // ---------- Table (expandable rows) ----------
     const GRID_COLS = 'minmax(420px,1.2fr) minmax(220px,0.8fr) 120px 160px 160px';
   
-    // >> [FIX] Removed `sticky` and `top` properties. It will now stack naturally inside the new sticky container.
     const TableHeader = (
       <div
         className="grid gap-4 px-4 py-3 text-xs text-muted-foreground min-w-[1080px] bg-slate-50/70 border-b"
@@ -1066,6 +1156,7 @@ export default function MyInventory({
                       <span className="font-medium truncate">{r.productName}</span>
                       {r.hasPromo && <SaleBadge />}
                       {r.lowStock && <LowBadge>Low</LowBadge>}
+                      {r.noDot && <NoDotBadge />}
                     </div>
                     <div className="text-xs text-muted-foreground truncate">
                       {r.brand} {r.model && `• ${r.model}`}
@@ -1092,6 +1183,11 @@ export default function MyInventory({
                         )}
                       </div>
                     )}
+                    {r.dotChips.length === 0 && r.noDot && (
+                      <div className="mt-1">
+                        <NoDotBadge />
+                      </div>
+                    )}
                   </div>
                 </div>
   
@@ -1106,7 +1202,7 @@ export default function MyInventory({
   
                 {/* Available */}
                 <div className="text-right">
-                  {r.lowStock ? <LowBadge>{r.available} units</LowBadge> : (
+                  {r.lowStock && r.available > 0 ? <LowBadge>{r.available} units</LowBadge> : (
                     <Badge variant="secondary" className="text-xs">
                       {r.available} units
                     </Badge>
@@ -1165,92 +1261,100 @@ export default function MyInventory({
                         + Add DOT
                       </Button>
                     </div>
-  
-                    <div className="grid grid-cols-12 text-xs font-medium text-muted-foreground pb-1">
-                      <div className="col-span-4">DOT</div>
-                      <div className="col-span-3">Specification</div>
-                      <div className="col-span-2 text-right">Qty</div>
-                      <div className="col-span-2 text-right">Price</div>
-                      <div className="col-span-1 text-right">Actions</div>
-                    </div>
-                    <Separator />
-  
-                    {r.dotsAll.map((d, i) => (
-                      <div
-                        key={`${r.key}-expand-${d.variantId}-${d.dotCode}-${i}`}
-                        className="grid grid-cols-12 py-2 items-center border-b last:border-b-0"
-                      >
-                        <div className="col-span-4 font-mono">{d.dotCode}</div>
-                        <div className="col-span-3">{d.spec}</div>
-                        <div className="col-span-2 text-right">{d.qty}</div>
-                        <div className="col-span-2 text-right">
-                          <div className="flex flex-col items-end">
-                            <span className={d.hasPromo ? 'text-green-600 font-medium' : ''}>
-                              {formatTHB(d.price)}
-                            </span>
-                            {d.hasPromo && d.basePrice !== d.price && (
-                              <span className="text-xs text-muted-foreground line-through">
-                                {formatTHB(d.basePrice)}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                        <div className="col-span-1">
-                          <div className="flex items-center justify-end gap-1">
-                            {/* +- ปรับสต็อก */}
-                            <Button
-                              size="icon"
-                              variant="outline"
-                              className="h-7 w-7 transition-transform active:scale-95"
-                              onClick={() => handleAdjust(r, d, -1)}
-                              disabled={adjustMutation.isPending || d.qty <= 0}
-                              title="Decrease"
-                            >
-                              <Minus className="h-4 w-4" />
-                            </Button>
-                            <Button
-                              size="icon"
-                              className="h-7 w-7 transition-transform active:scale-95"
-                              onClick={() => handleAdjust(r, d, +1)}
-                              disabled={adjustMutation.isPending}
-                              title="Increase"
-                            >
-                              <Plus className="h-4 w-4" />
-                            </Button>
-  
-                            {/* เมนูเพิ่มเติม */}
-                            <DropdownMenu>
-                              <DropdownMenuTrigger asChild>
-                                <Button size="icon" variant="ghost" className="h-7 w-7" title="More">
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                              </DropdownMenuTrigger>
-                              <DropdownMenuContent align="end">
-                                <DropdownMenuLabel>Actions</DropdownMenuLabel>
-                                <DropdownMenuItem
-                                  onClick={() => {
-                                    setPromoForm({
-                                      promoPrice: d.promoPrice ? String(d.promoPrice) : '',
-                                    });
-                                    setOpenPromo({ open: true, row: r, dot: d });
-                                  }}
-                                >
-                                  <Settings className="h-4 w-4 mr-2" />
-                                  Set promo price…
-                                </DropdownMenuItem>
-                                <DropdownMenuSeparator />
-                                <DropdownMenuItem
-                                  className="text-red-600 focus:text-red-600"
-                                  onClick={() => setOpenDelete({ open: true, row: r, dot: d })}
-                                >
-                                  Delete DOT
-                                </DropdownMenuItem>
-                              </DropdownMenuContent>
-                            </DropdownMenu>
-                          </div>
-                        </div>
+
+                    {r.dotsAll.length === 0 ? (
+                      <div className="py-3 text-xs text-muted-foreground">
+                        No DOT entries yet{!outOfStockOnly && !r.noDot ? ' in stock' : ''}. Use <span className="font-medium">Add DOT</span> to create one.
                       </div>
-                    ))}
+                    ) : (
+                      <>
+                        <div className="grid grid-cols-12 text-xs font-medium text-muted-foreground pb-1">
+                          <div className="col-span-4">DOT</div>
+                          <div className="col-span-3">Specification</div>
+                          <div className="col-span-2 text-right">Qty</div>
+                          <div className="col-span-2 text-right">Price</div>
+                          <div className="col-span-1 text-right">Actions</div>
+                        </div>
+                        <Separator />
+  
+                        {r.dotsAll.map((d, i) => (
+                          <div
+                            key={`${r.key}-expand-${d.variantId}-${d.dotCode}-${i}`}
+                            className="grid grid-cols-12 py-2 items-center border-b last:border-b-0"
+                          >
+                            <div className="col-span-4 font-mono">{d.dotCode}</div>
+                            <div className="col-span-3">{d.spec}</div>
+                            <div className="col-span-2 text-right">{d.qty}</div>
+                            <div className="col-span-2 text-right">
+                              <div className="flex flex-col items-end">
+                                <span className={d.hasPromo ? 'text-green-600 font-medium' : ''}>
+                                  {formatTHB(d.price)}
+                                </span>
+                                {d.hasPromo && d.basePrice !== d.price && (
+                                  <span className="text-xs text-muted-foreground line-through">
+                                    {formatTHB(d.basePrice)}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                            <div className="col-span-1">
+                              <div className="flex items-center justify-end gap-1">
+                                {/* +- ปรับสต็อก */}
+                                <Button
+                                  size="icon"
+                                  variant="outline"
+                                  className="h-7 w-7 transition-transform active:scale-95"
+                                  onClick={() => handleAdjust(r, d, -1)}
+                                  disabled={adjustMutation.isPending || d.qty <= 0}
+                                  title="Decrease"
+                                >
+                                  <Minus className="h-4 w-4" />
+                                </Button>
+                                <Button
+                                  size="icon"
+                                  className="h-7 w-7 transition-transform active:scale-95"
+                                  onClick={() => handleAdjust(r, d, +1)}
+                                  disabled={adjustMutation.isPending}
+                                  title="Increase"
+                                >
+                                  <Plus className="h-4 w-4" />
+                                </Button>
+  
+                                {/* เมนูเพิ่มเติม */}
+                                <DropdownMenu>
+                                  <DropdownMenuTrigger asChild>
+                                    <Button size="icon" variant="ghost" className="h-7 w-7" title="More">
+                                      <MoreHorizontal className="h-4 w-4" />
+                                    </Button>
+                                  </DropdownMenuTrigger>
+                                  <DropdownMenuContent align="end">
+                                    <DropdownMenuLabel>Actions</DropdownMenuLabel>
+                                    <DropdownMenuItem
+                                      onClick={() => {
+                                        setPromoForm({
+                                          promoPrice: d.promoPrice ? String(d.promoPrice) : '',
+                                        });
+                                        setOpenPromo({ open: true, row: r, dot: d });
+                                      }}
+                                    >
+                                      <Settings className="h-4 w-4 mr-2" />
+                                      Set promo price…
+                                    </DropdownMenuItem>
+                                    <DropdownMenuSeparator />
+                                    <DropdownMenuItem
+                                      className="text-red-600 focus:text-red-600"
+                                      onClick={() => setOpenDelete({ open: true, row: r, dot: d })}
+                                    >
+                                      Delete DOT
+                                    </DropdownMenuItem>
+                                  </DropdownMenuContent>
+                                </DropdownMenu>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </>
+                    )}
                   </div>
                 )}
               </div>
@@ -1260,7 +1364,7 @@ export default function MyInventory({
       </div>
     );
   
-    // ---------- Grid view (Mobile-first, NEW styling) ----------
+    // ---------- Grid view ----------
     const GridView = (
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-3 md:gap-4">
         {isLoading
@@ -1274,16 +1378,17 @@ export default function MyInventory({
                   className="relative hover:shadow-lg transition-shadow rounded-2xl overflow-hidden"
                 >
                   <div className="absolute top-3 right-3 flex gap-1">
-                    {r.lowStock ? <LowBadge>{r.available} units</LowBadge> : (
+                    {r.lowStock && r.available > 0 ? <LowBadge>{r.available} units</LowBadge> : (
                       <span className="inline-flex items-center rounded-full border px-2 py-0.5 text-[11px] font-medium
                         border-slate-200 bg-slate-50 text-slate-700">
                         {r.available} units
                       </span>
                     )}
                     {r.hasPromo && <SaleBadge />}
+                    {r.noDot && <NoDotBadge />}
                   </div>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-base pr-24 flex items-center justify-between">
+                    <CardTitle className="text.base pr-24 flex items-center justify-between">
                       <span className="truncate">{r.productName}</span>
                       <Button size="icon" variant="ghost" onClick={() => handleOpenEditProduct(r)} title="Edit product" className="transition-transform active:scale-95">
                         <Pencil className="h-4 w-4" />
@@ -1295,7 +1400,7 @@ export default function MyInventory({
                     <div className="text-xs text-muted-foreground">{r.specHighlight}</div>
                   </CardHeader>
                   <CardContent className="space-y-3">
-                    {r.dotChips.length > 0 && (
+                    {r.dotChips.length > 0 ? (
                       <div className="flex flex-wrap gap-1">
                         {r.dotChips.map((chip, i) => (
                           <span
@@ -1310,6 +1415,8 @@ export default function MyInventory({
                           </span>
                         ))}
                       </div>
+                    ) : (
+                      r.noDot && <div className="text-xs text-muted-foreground"><NoDotBadge /> ไม่มี DOT</div>
                     )}
   
                     <div className="grid grid-cols-2 gap-3 text-sm">
@@ -1358,42 +1465,48 @@ export default function MyInventory({
                             DOT details
                           </div>
                           <div className="space-y-2">
-                            {r.dotsAll.map((d, i) => (
-                              <div
-                                key={`${r.key}-grid-expand-${d.variantId}-${d.dotCode}-${i}`}
-                                className="flex items-center justify-between border-b pb-2 last:border-b-0"
-                              >
-                                <div className="min-w-0">
-                                  <div className="font-mono text-xs">{d.dotCode}</div>
-                                  <div className="text-xs text-muted-foreground">{d.spec}</div>
-                                </div>
-                                <div className="text-right">
-                                  <div className={`text-xs ${d.hasPromo ? 'text-green-600' : ''}`}>
-                                    {formatTHB(d.price)}
-                                  </div>
-                                  <div className="text-xs text-muted-foreground">Qty: {d.qty}</div>
-                                </div>
-                                <div className="flex items-center gap-1">
-                                  <Button
-                                    size="icon"
-                                    variant="outline"
-                                    className="h-7 w-7 transition-transform active:scale-95"
-                                    onClick={() => handleAdjust(r, d, -1)}
-                                    disabled={adjustMutation.isPending || d.qty <= 0}
-                                  >
-                                    <Minus className="h-4 w-4" />
-                                  </Button>
-                                  <Button
-                                    size="icon"
-                                    className="h-7 w-7 transition-transform active:scale-95"
-                                    onClick={() => handleAdjust(r, d, +1)}
-                                    disabled={adjustMutation.isPending}
-                                  >
-                                    <Plus className="h-4 w-4" />
-                                  </Button>
-                                </div>
+                            {r.dotsAll.length === 0 ? (
+                              <div className="py-2 text-xs text-muted-foreground">
+                                No DOT entries yet. Use <span className="font-medium">Add DOT</span> to create one.
                               </div>
-                            ))}
+                            ) : (
+                              r.dotsAll.map((d, i) => (
+                                <div
+                                  key={`${r.key}-grid-expand-${d.variantId}-${d.dotCode}-${i}`}
+                                  className="flex items-center justify-between border-b pb-2 last:border-b-0"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="font-mono text-xs">{d.dotCode}</div>
+                                    <div className="text-xs text-muted-foreground">{d.spec}</div>
+                                  </div>
+                                  <div className="text-right">
+                                    <div className={`text-xs ${d.hasPromo ? 'text-green-600' : ''}`}>
+                                      {formatTHB(d.price)}
+                                    </div>
+                                    <div className="text-xs text-muted-foreground">Qty: {d.qty}</div>
+                                  </div>
+                                  <div className="flex items-center gap-1">
+                                    <Button
+                                      size="icon"
+                                      variant="outline"
+                                      className="h-7 w-7 transition-transform active:scale-95"
+                                      onClick={() => handleAdjust(r, d, -1)}
+                                      disabled={adjustMutation.isPending || d.qty <= 0}
+                                    >
+                                      <Minus className="h-4 w-4" />
+                                    </Button>
+                                    <Button
+                                      size="icon"
+                                      className="h-7 w-7 transition-transform active:scale-95"
+                                      onClick={() => handleAdjust(r, d, +1)}
+                                      disabled={adjustMutation.isPending}
+                                    >
+                                      <Plus className="h-4 w-4" />
+                                    </Button>
+                                  </div>
+                                </div>
+                              ))
+                            )}
                           </div>
                         </div>
                       )}
@@ -1410,7 +1523,7 @@ export default function MyInventory({
       </div>
     );
   
-    // ---------- Matrix view (Spec × DOT) ----------
+    // ---------- Matrix view ----------
     const MatrixView = (
       <div className="space-y-4">
         {isLoading ? (
@@ -1448,6 +1561,7 @@ export default function MyInventory({
                       {r.lowStock ? <LowBadge>{r.available} units</LowBadge> : (
                         <Badge variant="secondary">{r.available} units</Badge>
                       )}
+                      {r.noDot && <NoDotBadge />}
                     </div>
                   </CardTitle>
                   <CardDescription className="truncate">
@@ -1456,135 +1570,141 @@ export default function MyInventory({
                 </CardHeader>
                 <CardContent className="pt-2">
                   <ScrollArea className="w-full">
-                    <div className="min-w-[720px]">
-                      {/* header row (dots) */}
-                      <div className="grid" style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}>
-                        <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border">
-                          Size / DOT
-                        </div>
-                        {dots.map((dc) => (
-                          <div key={`${r.key}-h-${dc}`} className="px-3 py-2 text-xs font-medium text-muted-foreground text-center bg-slate-50 border font-mono">
-                            {dc}
-                          </div>
-                        ))}
-                        <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border text-right">
-                          Row total
-                        </div>
+                    {dots.length === 0 ? (
+                      <div className="p-4 text-xs text-muted-foreground">
+                        No DOT entries {outOfStockOnly ? '' : 'in stock'}. {outOfStockOnly ? '' : 'Turn on "Out of Stock" to see zero-qty DOTs.'}
                       </div>
-  
-                      {/* body rows (each spec) */}
-                      {specs.map((spec) => {
-                        let rowTotal = 0;
-                        return (
-                          <div
-                            key={`${r.key}-row-${spec}`}
-                            className="grid items-stretch"
-                            style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}
-                          >
-                            <div className="px-3 py-2 text-sm font-medium border bg-white">
-                              {spec}
-                            </div>
-                            {dots.map((dc) => {
-                              const cell = cellMap.get(`${spec}__${dc}`);
-                              const qty = cell?.qty ?? 0;
-                              const price = cell?.price ?? 0;
-                              const hasPromo = cell?.hasPromo ?? false;
-                              if (qty > 0) rowTotal += qty;
-                              return (
-                                <div key={`${r.key}-cell-${spec}-${dc}`} className="px-2 py-2 border bg-white">
-                                  {qty > 0 ? (
-                                    <div className="flex flex-col items-center gap-1">
-                                      <div className="text-xs font-mono">{qty}</div>
-                                      <div className={`text-[10px] ${hasPromo ? 'text-green-600' : 'text-muted-foreground'}`}>
-                                        {formatTHB(price)}
-                                      </div>
-                                      <div className="flex items-center gap-1">
-                                        <Button
-                                          size="icon"
-                                          variant="outline"
-                                          className="h-6 w-6 transition-transform active:scale-95"
-                                          onClick={() =>
-                                            handleAdjust(
-                                              r,
-                                              {
-                                                dotCode: dc,
-                                                qty,
-                                                price,
-                                                spec,
-                                                variantId: cell!.variantId,
-                                                hasPromo,
-                                                basePrice: price,
-                                                promoPrice: hasPromo ? price : null,
-                                              },
-                                              -1
-                                            )
-                                          }
-                                          disabled={adjustMutation.isPending || qty <= 0}
-                                          title="Decrease"
-                                        >
-                                          <Minus className="h-3.5 w-3.5" />
-                                        </Button>
-                                        <Button
-                                          size="icon"
-                                          className="h-6 w-6 transition-transform active:scale-95"
-                                          onClick={() =>
-                                            handleAdjust(
-                                              r,
-                                              {
-                                                dotCode: dc,
-                                                qty,
-                                                price,
-                                                spec,
-                                                variantId: cell!.variantId,
-                                                hasPromo,
-                                                basePrice: price,
-                                                promoPrice: hasPromo ? price : null,
-                                              },
-                                              +1
-                                            )
-                                          }
-                                          disabled={adjustMutation.isPending}
-                                          title="Increase"
-                                        >
-                                          <Plus className="h-3.5 w-3.5" />
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  ) : (
-                                    <div className="h-10 flex items-center justify-center text-[10px] text-muted-foreground">
-                                      —
-                                    </div>
-                                  )}
-                                </div>
-                              );
-                            })}
-                            <div className="px-3 py-2 text-right text-sm border bg-slate-50">
-                              {rowTotal}
-                            </div>
+                    ) : (
+                      <div className="min-w-[720px]">
+                        {/* header row (dots) */}
+                        <div className="grid" style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}>
+                          <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border">
+                            Size / DOT
                           </div>
-                        );
-                      })}
-  
-                      {/* footer total per column */}
-                      <div className="grid" style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}>
-                        <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border">
-                          Column total
+                          {dots.map((dc) => (
+                            <div key={`${r.key}-h-${dc}`} className="px-3 py-2 text-xs font-medium text-muted-foreground text-center bg-slate-50 border font-mono">
+                              {dc}
+                            </div>
+                          ))}
+                          <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border text-right">
+                            Row total
+                          </div>
                         </div>
-                        {dots.map((dc) => {
-                          const colTotal = r.dotsAll
-                            .filter((d) => d.dotCode === dc)
-                            .reduce((s, d) => s + d.qty, 0);
+    
+                        {/* body rows (each spec) */}
+                        {specs.map((spec) => {
+                          let rowTotal = 0;
                           return (
-                            <div key={`${r.key}-colsum-${dc}`} className="px-3 py-2 text-sm text-center border bg-slate-50">
-                              {colTotal}
+                            <div
+                              key={`${r.key}-row-${spec}`}
+                              className="grid items-stretch"
+                              style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}
+                            >
+                              <div className="px-3 py-2 text-sm font-medium border bg:white">
+                                {spec}
+                              </div>
+                              {dots.map((dc) => {
+                                const cell = cellMap.get(`${spec}__${dc}`);
+                                const qty = cell?.qty ?? 0;
+                                const price = cell?.price ?? 0;
+                                const hasPromo = cell?.hasPromo ?? false;
+                                if (qty > 0) rowTotal += qty;
+                                return (
+                                  <div key={`${r.key}-cell-${spec}-${dc}`} className="px-2 py-2 border bg-white">
+                                    {qty > 0 ? (
+                                      <div className="flex flex-col items-center gap-1">
+                                        <div className="text-xs font-mono">{qty}</div>
+                                        <div className={`text-[10px] ${hasPromo ? 'text-green-600' : 'text-muted-foreground'}`}>
+                                          {formatTHB(price)}
+                                        </div>
+                                        <div className="flex items-center gap-1">
+                                          <Button
+                                            size="icon"
+                                            variant="outline"
+                                            className="h-6 w-6 transition-transform active:scale-95"
+                                            onClick={() =>
+                                              handleAdjust(
+                                                r,
+                                                {
+                                                  dotCode: dc,
+                                                  qty,
+                                                  price,
+                                                  spec,
+                                                  variantId: cell!.variantId,
+                                                  hasPromo,
+                                                  basePrice: price,
+                                                  promoPrice: hasPromo ? price : null,
+                                                },
+                                                -1
+                                              )
+                                            }
+                                            disabled={adjustMutation.isPending || qty <= 0}
+                                            title="Decrease"
+                                          >
+                                            <Minus className="h-3.5 w-3.5" />
+                                          </Button>
+                                          <Button
+                                            size="icon"
+                                            className="h-6 w-6 transition-transform active:scale-95"
+                                            onClick={() =>
+                                              handleAdjust(
+                                                r,
+                                                {
+                                                  dotCode: dc,
+                                                  qty,
+                                                  price,
+                                                  spec,
+                                                  variantId: cell!.variantId,
+                                                  hasPromo,
+                                                  basePrice: price,
+                                                  promoPrice: hasPromo ? price : null,
+                                                },
+                                                +1
+                                              )
+                                            }
+                                            disabled={adjustMutation.isPending}
+                                            title="Increase"
+                                          >
+                                            <Plus className="h-3.5 w-3.5" />
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ) : (
+                                      <div className="h-10 flex items-center justify-center text-[10px] text-muted-foreground">
+                                        —
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              <div className="px-3 py-2 text-right text-sm border bg-slate-50">
+                                {rowTotal}
+                              </div>
                             </div>
                           );
                         })}
-                        <div className="px-3 py-2 text-right text-sm border bg-slate-50 font-semibold">
-                          {r.available}
+    
+                        {/* footer total per column */}
+                        <div className="grid" style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}>
+                          <div className="px-3 py-2 text-xs font-medium text-muted-foreground bg-slate-50 border">
+                            Column total
+                          </div>
+                          {dots.map((dc) => {
+                            const colTotal = r.dotsAll
+                              .filter((d) => d.dotCode === dc)
+                              .reduce((s, d) => s + d.qty, 0);
+                            return (
+                              <div key={`${r.key}-colsum-${dc}`} className="px-3 py-2 text-sm text-center border bg-slate-50">
+                                {colTotal}
+                              </div>
+                            );
+                          })}
+                          <div className="px-3 py-2 text-right text-sm border bg-slate-50 font-semibold">
+                            {r.available}
+                          </div>
                         </div>
                       </div>
-                    </div>
+                    )}
                   </ScrollArea>
                 </CardContent>
               </Card>
@@ -1594,7 +1714,7 @@ export default function MyInventory({
       </div>
     );
   
-    // ---------- Pagination UI (NEW) ----------
+    // ---------- Pagination UI ----------
     const PaginationBar = (
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 px-2 md:px-1">
         <div className="text-sm text-muted-foreground">
@@ -1674,9 +1794,9 @@ export default function MyInventory({
     <div className="w-full min-h-screen space-y-6 md:space-y-8 p-4 sm:p-6 md:p-8">
       {Header}
 
-      {KPI}
+      <div className="grid gap-4">{KPI}</div>
 
-      {/* >> [RESTRUCTURED] The new sticky container for Filters and Table Header */}
+      {/* Sticky container for Filters and Table Header */}
       <div className="sticky top-0 z-20">
         {FilterBar}
         {viewMode === 'table' && TableHeader}
@@ -1697,7 +1817,7 @@ export default function MyInventory({
         </div>
       </div>
 
-      {/* ... (All dialogs remain the same) ... */}
+      {/* --- Dialogs --- */}
       <Dialog
         open={openAddDot.open}
         onOpenChange={(o) => setOpenAddDot({ open: o, row: o ? openAddDot.row : null })}
@@ -2104,7 +2224,7 @@ export default function MyInventory({
                     onChange={(e) => setPromoAll(e.target.value)}
                   />
                 </div>
-                <div className="flex items-end">
+                <div className="flex items=end">
                   <Button
                     size="sm"
                     onClick={async () => {

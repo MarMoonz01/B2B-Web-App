@@ -454,7 +454,7 @@ export const InventoryService = {
   /* ---------- Read: inventory ---------- */
 
   /** ดึง inventory ของสาขาเดียว */
-  async fetchStoreInventory(storeId: string, storeName?: string): Promise<GroupedProduct[]> {
+  async fetchStoreInventory(storeId: string, storeName?: string, options?: { includeZeroAndEmpty?: boolean }): Promise<GroupedProduct[]> {
     const storeRef = doc(db, 'stores', storeId);
     const inventoryRef = collection(storeRef, 'inventory');
     const brandsSnap = await getDocs(inventoryRef);
@@ -499,9 +499,9 @@ export const InventoryService = {
                 promoPrice: dd.promoPrice ?? null,
               };
             })
-            .filter((d) => d.qty > 0);
+            .filter((d) => options?.includeZeroAndEmpty ? true : d.qty > 0);
 
-          if (dots.length > 0) {
+          if (dots.length > 0 || options?.includeZeroAndEmpty) {
             sizes.push({
               variantId,
               specification,
@@ -511,7 +511,7 @@ export const InventoryService = {
           }
         }
 
-        if (sizes.length > 0) {
+        if (sizes.length > 0 || options?.includeZeroAndEmpty) {
           products.push({
             id: `${brandId}-${modelId}`,
             name: `${brandName} ${modelName}`.trim(),
