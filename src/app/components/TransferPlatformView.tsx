@@ -5,6 +5,8 @@ import {
   Search,
   ChevronRight,
   ChevronDown,
+  ChevronUp,
+  ChevronLeft,
   Building2,
   Truck,
   Download,
@@ -14,29 +16,16 @@ import {
   Minus,
   MapPin,
   LayoutGrid,
-  Table as TableIcon,
   X,
-  Star,
   Sparkles,
+  SlidersHorizontal,
+  Filter,
 } from 'lucide-react';
 import { AnimatePresence, motion } from 'framer-motion';
 import { toast } from 'sonner';
 
 // react-query
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-
-// tanstack table + virtualizer
-import type {
-  ColumnDef,
-  SortingState,
-  VisibilityState,
-} from '@tanstack/react-table';
-import {
-  getCoreRowModel,
-  getSortedRowModel,
-  useReactTable,
-} from '@tanstack/react-table';
-import { useVirtualizer } from '@tanstack/react-virtual';
 
 // shadcn/ui
 import { Button } from '@/components/ui/button';
@@ -63,17 +52,21 @@ import { Label } from '@/components/ui/label';
 import {
   Dialog,
   DialogContent,
-  DialogFooter,
   DialogHeader,
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
 import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from '@/components/ui/sheet';
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from '@/components/ui/sheet';
 import { Textarea } from '@/components/ui/textarea';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { cn } from '@/lib/utils';
@@ -83,90 +76,89 @@ import { InventoryService, StoreService, OrderService } from '@/lib/services/Inv
 import type { GroupedProduct, OrderItem } from '@/lib/services/InventoryService';
 
 /**
- * ──────────────────────────────────────────────────────────────────────────────
- * Transfer Platform — Top-tier UX/UI Redesign
- * - Adds premium card view for mobile + desktop
- * - Polished KPI tiles, sticky filters, subtle micro‑interactions
- * - Cart FAB for mobile, animated dialogs/sheets
- * - Safer one-branch-per-order logic with helpful toasts
- * - Persisted view and sort preferences
- * ──────────────────────────────────────────────────────────────────────────────
+ * Transfer Platform — Wizard Edition
+ * - Product grid
+ * - Wizard 3 steps (Spec → Branch → DOT) with Back/Next
+ * - Local sort & filters in Branch step
+ * - One-branch-per-order guard
+ * - Auto-refresh pauses while any modal open
  */
 
 // ---------- Helpers ----------
-function seededRand(seed: string, min: number, max: number) {
+const getQty = (d: any): number => Number(d?.qty ?? d?.quantity ?? 0);
+const getBasePrice = (d: any): number => Number(d?.basePrice ?? d?.price ?? 0);
+const getPromoPrice = (d: any): number | null => {
+  const v = d?.promoPrice ?? d?.discountPrice;
+  return v == null ? null : Number(v);
+};
+const getEffectivePrice = (d: any): { price: number; base: number; hasPromo: boolean } => {
+  const base = getBasePrice(d);
+  const promo = getPromoPrice(d);
+  return { price: promo != null ? promo : base, base, hasPromo: promo != null };
+};
+
+function seededRand(seed: string, min: number, max: number): number {
   let h = 2166136261 >>> 0;
   for (let i = 0; i < seed.length; i++) h = Math.imul(h ^ seed.charCodeAt(i), 16777619);
   h = (h ^ (h >>> 16)) >>> 0;
   const r = h / 0xffffffff;
   return Math.round((min + (max - min) * r) * 10) / 10;
 }
-const calcDistanceKm = (branchId: string) => seededRand(branchId, 0.8, 6.8);
-const formatTHB = (n: number) =>
-  new Intl.NumberFormat('th-TH', {
+
+type LatLng = { lat: number; lng: number };
+type LatLngMap = Record<string, LatLng | undefined>;
+
+function kmBetween(a: LatLng, b: LatLng): number {
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const R = 6371;
+  const dLat = toRad(b.lat - a.lat);
+  const dLon = toRad(b.lng - a.lng);
+  const lat1 = toRad(a.lat);
+  const lat2 = toRad(b.lat);
+  const sinDLat = Math.sin(dLat / 2);
+  const sinDLon = Math.sin(dLon / 2);
+  const h = sinDLat * sinDLat + Math.cos(lat1) * Math.cos(lat2) * sinDLon * sinDLon;
+  const c = 2 * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  return Math.round(R * c * 10) / 10;
+}
+
+function formatTHB(n: number): string {
+  return new Intl.NumberFormat('th-TH', {
     style: 'currency',
     currency: 'THB',
     maximumFractionDigits: 0,
   }).format(Number(n) || 0);
-
-// Debounce hook
-function useDebounced<T>(value: T, delay = 300) {
-  const [v, setV] = useState(value);
-  useEffect(() => {
-    const id = setTimeout(() => setV(value), delay);
-    return () => clearTimeout(id);
-  }, [value, delay]);
-  return v;
 }
+const safeMin = (v: number) => (v === Infinity ? 0 : v);
 
 // ---------- Types ----------
-interface DotPick {
-  sizeSpec: string;
-  variantId: string;
-  dotCode: string;
-  available: number;
-  price: number;
-  selected: number;
-  hasPromo: boolean;
-}
-
-interface CartItem extends Omit<OrderItem, 'unitPrice' | 'totalPrice'> {
-  branchName: string;
-  branchId: string;
-  maxQty: number;
-  unitPrice?: number; // Not used for logic, but kept for potential display
-  totalPrice?: number; // Not used for logic
-}
-
-type TPRow = {
-  key: string;
-  productName: string;
-  brand: string;
-  model?: string;
-  spec: string;
+type BranchSummary = {
   branchId: string;
   branchName: string;
   distance: number;
   available: number;
   minPrice: number;
-  maxPrice: number;
-  dotsAll: {
-    dotCode: string;
-    qty: number;
-    price: number;
-    spec: string;
-    variantId: string;
-    hasPromo: boolean;
-    basePrice: number;
-  }[];
-  dotChips: { dotCode: string; qty: number; price: number; hasPromo: boolean }[];
-  grouped: GroupedProduct;
-  branchNode: any;
   hasPromo: boolean;
+  node: any; // raw branch node
 };
 
+type ProductRow = {
+  key: string;
+  productName: string;
+  brand: string;
+  model?: string;
+  hasPromoAny: boolean;
+  totalAvailable: number;
+  minPriceAll: number;
+  grouped: GroupedProduct;
+};
+
+// Wizard types
+type SpecOption = { spec: string; total: number; minPrice: number; hasPromo: boolean };
+type BranchForSpec = BranchSummary & { maxPrice: number };
+
 // ---------- Component ----------
-export default function TransferPlatformViewRedesign({
+export default function TransferPlatformView({
   myBranchId,
   myBranchName,
 }: {
@@ -174,357 +166,207 @@ export default function TransferPlatformViewRedesign({
   myBranchName: string;
 }) {
   const qc = useQueryClient();
-  const tableContainerRef = useRef<HTMLDivElement>(null);
 
   // UI state
-  const [viewMode, setViewMode] = useState<'table' | 'grid'>(
-    () => (typeof window !== 'undefined' ? ((localStorage.getItem('tp:view') as any) || 'grid') : 'grid')
+  const [viewMode, setViewMode] = useState<'grid' | 'table'>(() =>
+    (typeof window !== 'undefined' ? (localStorage.getItem('tp:view') as any) : null) || 'grid'
   );
-  const [expandedRow, setExpandedRow] = useState<string | null>(null);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
 
   // Filters
   const [selectedBrand, setSelectedBrand] = useState('All Brands');
-  const [selectedStore, setSelectedStore] = useState<string>('all');
   const [searchTerm, setSearchTerm] = useState('');
-  const debouncedSearch = useDebounced(searchTerm, 300);
   const [inStockOnly, setInStockOnly] = useState(true);
-  const [lowStockOnly, setLowStockOnly] = useState(false);
-  const [sortBy, setSortBy] = useState<'relevance' | 'price-low' | 'price-high' | 'rating' | 'popular' | 'distance' | 'brand'>('relevance');
-  const [selectedSize, setSelectedSize] = useState<string>('All Sizes');
-  const [hasPromotion, setHasPromotion] = useState<boolean>(false);
+  const [hasPromotion, setHasPromotion] = useState(false);
+  const [sortBy, setSortBy] = useState<'relevance' | 'price' | 'distance' | 'brand'>('relevance');
+  const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
-  // --- NEW: Clear Filters Function ---
-  const clearFilters = () => {
-    setSelectedBrand('All Brands');
-    setSelectedStore('all');
-    setSearchTerm('');
-    setInStockOnly(true);
-    setLowStockOnly(false);
-    setSortBy('relevance');
-    setSelectedSize('All Sizes');
-    setHasPromotion(false);
-    toast.info('Filters cleared');
-  };
-  
-  // Check if any filter is active
-  const isFiltered = useMemo(() => {
-    return (
-      selectedBrand !== 'All Brands' ||
-      selectedStore !== 'all' ||
-      searchTerm !== '' ||
-      !inStockOnly ||
-      lowStockOnly ||
-      sortBy !== 'relevance' ||
-      selectedSize !== 'All Sizes' ||
-      hasPromotion
-    );
-  }, [selectedBrand, selectedStore, searchTerm, inStockOnly, lowStockOnly, sortBy, selectedSize, hasPromotion]);
-
-  // Dot picker & cart
-  const [isDialogOpen, setIsDialogOpen] = useState(false);
-  const [activeProduct, setActiveProduct] = useState<GroupedProduct | null>(null);
-  const [activeBranch, setActiveBranch] = useState<any>(null);
-  const [dotPicks, setDotPicks] = useState<DotPick[]>([]);
-
-  const [cart, setCart] = useState<CartItem[]>([]);
+  // Cart
+  interface CartItemView extends Omit<OrderItem, 'unitPrice' | 'totalPrice'> {
+    branchId: string;
+    branchName: string;
+    productName: string;
+    maxQty: number;
+  }
+  const [cart, setCart] = useState<CartItemView[]>([]);
   const [isCartOpen, setIsCartOpen] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [notes, setNotes] = useState('');
 
-  // Column visibility & sorting for table mode
-  const [sorting, setSorting] = useState<SortingState>(() => {
-    if (typeof window === 'undefined') return [];
-    try {
-      const raw = localStorage.getItem('tp:sort');
-      return raw ? (JSON.parse(raw) as SortingState) : [{ id: 'available', desc: true }];
-    } catch {
-      return [{ id: 'available', desc: true }];
-    }
-  });
-  const [columnVisibility, setColumnVisibility] = useState<VisibilityState>(() => {
-    if (typeof window === 'undefined') return {};
-    try {
-      const raw = localStorage.getItem('tp:cols');
-      return raw ? (JSON.parse(raw) as VisibilityState) : { distance: true, price: true };
-    } catch {
-      return { distance: true, price: true };
-    }
-  });
+  // Wizard
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [wizardProduct, setWizardProduct] = useState<GroupedProduct | null>(null);
 
-  useEffect(() => {
-    localStorage.setItem('tp:view', viewMode);
-  }, [viewMode]);
-  useEffect(() => {
-    localStorage.setItem('tp:sort', JSON.stringify(sorting));
-  }, [sorting]);
-  useEffect(() => localStorage.setItem('tp:cols', JSON.stringify(columnVisibility)), [columnVisibility]);
+  // Pause auto refresh while any modal is open
+  const anyModalOpen = wizardOpen || isCartOpen;
 
   // ------- Data fetching (React Query) -------
-  const invQuery = useQuery<{ inv: GroupedProduct[]; stores: Record<string, string> }>({
+  const invQuery = useQuery<{
+    inv: GroupedProduct[];
+    stores: Record<string, string>;
+    coords?: LatLngMap;
+  }>({
     queryKey: ['inventory', 'all'],
     queryFn: async () => {
-      const [inv, storeMap] = await Promise.all([InventoryService.fetchInventory(), StoreService.getAllStores()]);
-      return { inv: inv ?? [], stores: storeMap ?? {} };
+      const [inv, storeMap] = await Promise.all([
+        InventoryService.fetchInventory(),
+        StoreService.getAllStores(),
+      ]);
+      let coords: LatLngMap | undefined;
+      try {
+        const all: any = await (StoreService as any)?.getStoreLocations?.();
+        if (all && typeof all === 'object') coords = all as LatLngMap;
+      } catch {}
+      return { inv: inv ?? [], stores: storeMap ?? {}, coords };
     },
     staleTime: 60_000,
-    refetchInterval: 60_000,
+    refetchInterval: anyModalOpen ? false : 60_000,
+    refetchOnWindowFocus: !anyModalOpen,
   });
 
   useEffect(() => {
     if (invQuery.isFetched) setLastUpdated(new Date());
-  }, [invQuery.data, invQuery.isFetched]);
-
-  const ordersQuery = useQuery({
-    queryKey: ['orders', myBranchId, 'buyer'],
-    queryFn: () => OrderService.getOrdersByBranch(myBranchId, 'buyer'),
-    refetchInterval: 15_000,
-    enabled: Boolean(myBranchId),
-  });
+  }, [invQuery.isFetched]);
 
   const isLoading = invQuery.isLoading || invQuery.isRefetching;
   const inventory = (invQuery.data?.inv ?? []) as GroupedProduct[];
   const stores = (invQuery.data?.stores ?? {}) as Record<string, string>;
+  const coords = (invQuery.data?.coords ?? {}) as LatLngMap;
 
-  const availableBrands = useMemo(() => Array.from(new Set(inventory.map((i) => i.brand ?? 'Unknown'))).sort(), [inventory]);
+  const getDistanceKm = (branchId: string): number => {
+    const me = coords?.[String(myBranchId)];
+    const other = coords?.[String(branchId)];
+    if (me && other) return kmBetween(me, other);
+    return seededRand(String(branchId), 0.8, 6.8);
+  };
 
-  const activeBranchIds = useMemo(() => {
-    const set = new Set<string>();
-    inventory.forEach((p) => (p.branches ?? []).forEach((b: any) => set.add(String(b.branchId))));
-    return Array.from(set);
-  }, [inventory]);
+  const availableBrands = useMemo(
+    () => Array.from(new Set(inventory.map((i) => i.brand ?? 'Unknown'))).sort(),
+    [inventory]
+  );
 
-  const availableSizes = useMemo(() => {
-    const set = new Set<string>();
+  // ------- Build Product rows -------
+  const productRows: ProductRow[] = useMemo(() => {
+    const rows: ProductRow[] = [];
     for (const p of inventory) {
-      for (const b of (p.branches ?? []) as any[]) {
-        for (const s of (b.sizes ?? []) as any[]) {
-          const spec = String(s.specification ?? '').trim();
-          if (spec) set.add(spec);
-        }
-      }
-    }
-    return Array.from(set).sort();
-  }, [inventory]);
+      const branches: any[] = p.branches ?? [];
+      let hasPromo = false;
+      let total = 0;
+      let minAll = Infinity;
 
-  // ------- Build rows -------
-  const rows: TPRow[] = useMemo(() => {
-    const out: TPRow[] = [];
-    for (const p of inventory) {
-      const branchesAll = p.branches ?? [];
-      const branchesToShow = selectedStore === 'all' ? branchesAll : branchesAll.filter((b: any) => String(b.branchId) === String(selectedStore));
-
-      for (const b of branchesToShow as any[]) {
-        const sizes = b.sizes ?? [];
-        const allDots: TPRow['dotsAll'] = [];
-        let totalUnits = 0;
-        let highlightSpec = 'N/A';
-        let highlightQty = -1;
-        let hasPromoAny = false;
-        let minPrice = Infinity;
-        let maxPrice = 0;
-
-        for (const s of sizes as any[]) {
-          const dots = (s.dots ?? []) as any[];
-          const specQty = dots.reduce((sum: number, d: any) => sum + Number(d.qty ?? 0), 0);
-          if (specQty > highlightQty) {
-            highlightQty = specQty;
-            highlightSpec = s.specification ?? 'N/A';
-          }
-          for (const d of dots) {
-            const basePrice = Number(d.basePrice ?? 0);
-            const promoPrice = d.promoPrice != null ? Number(d.promoPrice) : null;
-            const price = promoPrice ?? basePrice;
-            const qty = Number(d.qty ?? 0);
-            const hasPromo = promoPrice != null;
-
-            if (qty > 0) {
-              allDots.push({
-                dotCode: d.dotCode,
-                qty,
-                price,
-                spec: s.specification ?? 'N/A',
-                variantId: String(s.variantId ?? ''),
-                hasPromo,
-                basePrice,
-              });
-              totalUnits += qty;
-              if (price > 0) {
-                minPrice = Math.min(minPrice, price);
-                maxPrice = Math.max(maxPrice, price);
-              }
+      for (const b of branches) {
+        for (const s of b.sizes ?? []) {
+          for (const d of s.dots ?? []) {
+            const { price, hasPromo: promo } = getEffectivePrice(d);
+            const q = getQty(d);
+            if (q > 0) {
+              total += q;
+              minAll = Math.min(minAll, price);
             }
-            if (hasPromo) hasPromoAny = true;
+            if (promo) hasPromo = true;
           }
         }
-
-        if (inStockOnly && totalUnits <= 0) continue;
-        if (lowStockOnly && !(totalUnits > 0 && totalUnits < 6)) continue;
-
-        allDots.sort((a, b) => b.qty - a.qty || a.price - b.price);
-        if (minPrice === Infinity) minPrice = 0;
-
-        const dotChips = allDots.slice(0, 3).map((d) => ({ dotCode: d.dotCode, qty: d.qty, price: d.price, hasPromo: d.hasPromo }));
-
-        out.push({
-          key: `${p.id}__${b.branchId}`,
-          productName: p.name,
-          brand: p.brand,
-          model: p.model,
-          spec: highlightSpec,
-          branchId: String(b.branchId),
-          branchName: b.branchName,
-          distance: calcDistanceKm(String(b.branchId)),
-          available: totalUnits,
-          minPrice,
-          maxPrice,
-          dotsAll: allDots,
-          dotChips,
-          grouped: p,
-          branchNode: b,
-          hasPromo: hasPromoAny,
-        });
       }
+      if (inStockOnly && total <= 0) continue;
+      if (hasPromotion && !hasPromo) continue;
+
+      rows.push({
+        key: String(p.id),
+        productName: p.name,
+        brand: p.brand,
+        model: p.model,
+        hasPromoAny: hasPromo,
+        totalAvailable: total,
+        minPriceAll: safeMin(minAll),
+        grouped: p,
+      });
     }
 
-    const q = debouncedSearch.trim().toLowerCase();
+    const q = searchTerm.trim().toLowerCase();
+    const filtered = rows.filter((r) =>
+      selectedBrand === 'All Brands'
+        ? true
+        : r.brand?.toLowerCase() === selectedBrand.toLowerCase()
+    ).filter((r) =>
+      !q ? true : `${r.productName} ${r.brand} ${r.model}`.toLowerCase().includes(q)
+    );
 
-    const filtered = out
-      .filter((r) => (selectedBrand === 'All Brands' ? true : r.brand === selectedBrand))
-      .filter((r) => (selectedSize === 'All Sizes' ? true : r.dotsAll.some((d) => d.spec === selectedSize)))
-      .filter((r) => (!q ? true : `${r.productName} ${r.brand} ${r.model} ${r.spec} ${r.branchName}`.toLowerCase().includes(q)))
-      .filter((r) => (hasPromotion ? r.hasPromo : true));
-
-    const sorted = [...filtered].sort((a, b) => {
+    const dir = sortDir === 'asc' ? 1 : -1;
+    filtered.sort((a, b) => {
+      const byPrice = () => (a.minPriceAll - b.minPriceAll) * dir;
+      const byStock = () => (b.totalAvailable - a.totalAvailable) * dir;
+      const byBrand = () => a.brand.localeCompare(b.brand);
       switch (sortBy) {
-        case 'price-low':
-          return (a.minPrice || Infinity) - (b.minPrice || Infinity);
-        case 'price-high':
-          return (b.maxPrice || 0) - (a.maxPrice || 0);
-        case 'distance':
-          return a.distance - b.distance;
+        case 'price':
+          return byPrice() || byStock() || byBrand();
         case 'brand':
-          return a.brand.localeCompare(b.brand);
-        case 'popular':
-        case 'rating':
+          return byBrand();
         case 'relevance':
         default:
-          return b.available - a.available;
+          return byStock() || byPrice() || byBrand();
       }
     });
 
-    return sorted;
-  }, [
-    inventory,
-    selectedStore,
-    inStockOnly,
-    lowStockOnly,
-    debouncedSearch,
-    selectedBrand,
-    selectedSize,
-    hasPromotion,
-    sortBy,
-  ]);
+    return filtered;
+  }, [inventory, selectedBrand, searchTerm, inStockOnly, hasPromotion, sortBy, sortDir]);
 
-  // ------- KPI -------
+  // ------- KPIs -------
   const kpis = useMemo(() => {
-    const products = new Set(rows.map((r) => r.productName)).size;
-    const units = rows.reduce((s, r) => s + r.available, 0);
-    const low = rows.filter((r) => r.available > 0 && r.available < 6).length;
-    const branches = new Set(rows.map((r) => r.branchId)).size;
-    const avgPrice = rows.length ? Math.round(rows.reduce((s, r) => s + r.minPrice, 0) / rows.length) : 0;
+    const products = productRows.length;
+    const units = productRows.reduce((s, r) => s + r.totalAvailable, 0);
+    const avgPrice = products ? Math.round(productRows.reduce((s, r) => s + r.minPriceAll, 0) / products) : 0;
+    const branches = new Set(
+      inventory.flatMap((p) => (p.branches ?? []).map((b: any) => String(b.branchId)))
+    ).size;
+    const low = 0; // simplified
     return { products, units, low, branches, avgPrice };
-  }, [rows]);
+  }, [productRows, inventory]);
 
-  // ------- Dot Picker & Cart -------
-  const openDotPicker = (product: GroupedProduct, branch: any) => {
-    setActiveProduct(product);
-    setActiveBranch(branch);
-
-    const picks: DotPick[] = (branch.sizes ?? [])
-      .flatMap((size: any) =>
-        (size.dots ?? []).map((dot: any) => {
-          const available = Number(dot.qty ?? 0);
-          const basePrice = Number(dot.basePrice ?? 0);
-          const promoPrice = dot.promoPrice != null ? Number(dot.promoPrice) : null;
-          const price = promoPrice ?? basePrice;
-          const hasPromo = promoPrice != null;
-
-          return {
-            sizeSpec: size.specification ?? 'N/A',
-            variantId: String(size.variantId ?? ''),
-            dotCode: dot.dotCode ?? '',
-            available,
-            price,
-            selected: 0,
-            hasPromo,
-          };
-        })
-      )
-      .filter((p: DotPick) => p.available > 0);
-
-    setDotPicks(picks);
-    setIsDialogOpen(true);
-  };
-
-  const handlePickChange = (dotCode: string, variantId: string, change: number) => {
-    setDotPicks((picks) =>
-      picks.map((p) =>
-        p.dotCode === dotCode && p.variantId === variantId
-          ? { ...p, selected: Math.max(0, Math.min(p.available, p.selected + change)) }
-          : p
-      )
-    );
-  };
-
-  const handleAddToCart = () => {
-    if (!activeProduct || !activeBranch) return;
-
-    if (cart.length > 0 && cart[0].branchId !== activeBranch.branchId) {
-      toast.error('You can only request from one branch at a time. Please clear your cart first.');
-      return;
-    }
-
-    const itemsToAdd = dotPicks.filter((p) => p.selected > 0);
-    const newCartItems: CartItem[] = itemsToAdd.map((item) => ({
-      branchId: activeBranch.branchId,
-      branchName: activeBranch.branchName,
-      productId: activeProduct.id,
-      productName: activeProduct.name,
-      specification: item.sizeSpec,
-      dotCode: item.dotCode,
-      quantity: item.selected,
-      variantId: item.variantId,
-      maxQty: item.available,
-    }));
-
-    setCart((prev) => {
-      const other = prev.filter((it) => it.branchId !== activeBranch.branchId);
-      const same = prev.filter((it) => it.branchId === activeBranch.branchId);
-      newCartItems.forEach((ni) => {
-        const idx = same.findIndex((x) => x.dotCode === ni.dotCode && x.variantId === ni.variantId);
-        if (idx > -1) same[idx] = ni;
-        else same.push(ni);
-      });
-      return [...other, ...same].filter((it) => it.quantity > 0);
-    });
-
-    toast.success(`${itemsToAdd.length > 0 ? 'Cart updated' : 'Selection cleared'} for ${activeBranch.branchName}.`);
-    setIsDialogOpen(false);
-    setIsCartOpen(true);
-  };
+  // ------- Cart helpers -------
+  const cartCount = useMemo(() => cart.reduce((s, it) => s + it.quantity, 0), [cart]);
+  const cartSourceBranchName = useMemo(() => (cart.length ? cart[0].branchName : 'your cart'), [cart]);
 
   const removeFromCart = (dotCode: string, variantId: string, branchId: string) => {
     setCart((c) => c.filter((it) => !(it.dotCode === dotCode && it.variantId === variantId && it.branchId === branchId)));
   };
 
-  const cartCount = useMemo(() => cart.reduce((s, it) => s + it.quantity, 0), [cart]);
-  const cartSourceBranchName = useMemo(() => (cart.length ? cart[0].branchName : 'your cart'), [cart]);
+  async function preflightValidateCart(items: CartItemView[]): Promise<{ ok: boolean; message?: string }> {
+    try {
+      const latest = await InventoryService.fetchInventory();
+      const map: Record<string, any> = {};
+      for (const p of latest ?? []) map[String(p.id)] = p;
+
+      for (const it of items) {
+        const p = map[String(it.productId)];
+        if (!p) return { ok: false, message: `Product ${it.productName} not found anymore.` };
+        const branch = (p.branches ?? []).find((b: any) => String(b.branchId) === String(it.branchId));
+        if (!branch) return { ok: false, message: `Branch changed for ${it.productName}.` };
+        let available = 0;
+        for (const s of branch.sizes ?? []) {
+          if (String(s.variantId ?? '') !== String(it.variantId)) continue;
+          for (const d of s.dots ?? []) {
+            if (String(d.dotCode ?? '') !== String(it.dotCode)) continue;
+            available = getQty(d);
+          }
+        }
+        if (available < it.quantity) return { ok: false, message: `${it.productName} ${it.specification} ${it.dotCode} updated: only ${available} left.` };
+      }
+      return { ok: true };
+    } catch (e: any) {
+      return { ok: false, message: e?.message ?? 'Unable to validate inventory.' };
+    }
+  }
 
   const handleSubmitOrder = async () => {
     if (!cart.length) return;
     setIsSubmitting(true);
     try {
+      const pf = await preflightValidateCart(cart);
+      if (!pf.ok) {
+        toast.error(pf.message ?? 'Inventory changed. Please review your cart.');
+        setIsSubmitting(false);
+        return;
+      }
       const sellerBranchId = cart[0].branchId;
       const sellerBranchName = cart[0].branchName;
       await OrderService.createOrder({
@@ -541,148 +383,207 @@ export default function TransferPlatformViewRedesign({
       setIsCartOpen(false);
       qc.invalidateQueries({ queryKey: ['orders', myBranchId, 'buyer'] });
     } catch (e: any) {
-      console.error(e);
       toast.error(`Failed to send request: ${e?.message ?? 'Unknown error'}`);
     } finally {
       setIsSubmitting(false);
     }
   };
 
-  // ------- Export -------
-  const exportCSV = () => {
-    const header = ['Product', 'Brand', 'Model', 'Specification', 'Source Branch', 'Available', 'Distance(km)', 'Min Price', 'Max Price'];
-    const rowsAsText = rows.map((r) =>
-      [r.productName, r.brand, r.model ?? '', r.spec, r.branchName, r.available, r.distance, r.minPrice, r.maxPrice]
-        .map((x) => `"${String(x).replace(/\"/g, '\"\"')}"`)
-        .join(',')
-    );
-    const csvText = [header.join(','), ...rowsAsText].join('\\n');
-    const BOM = '\\uFEFF';
-    const blob = new Blob([BOM + csvText], { type: 'text/csv;charset=utf-8;' });
-    const url = window.URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `transfer_report_${new Date().toISOString().slice(0, 19)}.csv`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    window.URL.revokeObjectURL(url);
+  // ---------- Wizard ----------
+  type Step = 'spec' | 'branch' | 'dot';
+  const [step, setStep] = useState<Step>('spec');
+  const canGoBack = step !== 'spec';
+  const goBack = () => setStep((s) => (s === 'dot' ? 'branch' : 'spec'));
+
+  const [selectedSpec, setSelectedSpec] = useState<SpecOption | null>(null);
+  const [selectedBranch, setSelectedBranch] = useState<BranchForSpec | null>(null);
+
+  type PickRow = { sizeSpec: string; variantId: string; dotCode: string; available: number; price: number; hasPromo: boolean; selected: number };
+  const [dotPicks, setDotPicks] = useState<PickRow[]>([]);
+
+  // open wizard with product
+  const openWizard = (p: GroupedProduct) => {
+    setWizardProduct(p);
+    setSelectedSpec(null);
+    setSelectedBranch(null);
+    setDotPicks([]);
+    setStep('spec');
+    setWizardOpen(true);
   };
 
-  // ------- Table Setup -------
-  const columns: ColumnDef<TPRow>[] = [
-    {
-      id: 'expand',
-      header: '',
-      cell: ({ row }) => (
-        <Button variant="ghost" size="sm" onClick={() => setExpandedRow(expandedRow === row.original.key ? null : row.original.key)}>
-          {expandedRow === row.original.key ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-        </Button>
-      ),
-      size: 40,
-    },
-    {
-      accessorKey: 'productName',
-      header: 'Product',
-      cell: ({ row }) => (
-        <div className="min-w-0">
-          <div className="font-medium truncate">{row.original.productName}</div>
-          <div className="text-sm text-muted-foreground truncate">{row.original.brand} {row.original.model}</div>
-        </div>
-      ),
-      size: 200,
-    },
-    {
-      accessorKey: 'branchName',
-      header: 'Source Branch',
-      cell: ({ row }) => (
-        <div className="flex items-center gap-2">
-          <Building2 className="h-4 w-4 text-muted-foreground" />
-          <span className="truncate">{row.original.branchName}</span>
-        </div>
-      ),
-      size: 160,
-    },
-    {
-      accessorKey: 'available',
-      header: 'Available',
-      cell: ({ row }) => (
-        <div className="text-center">
-          <span
-            className={cn(
-              'font-medium',
-              row.original.available === 0 ? 'text-red-600' : row.original.available < 6 ? 'text-amber-600' : 'text-green-600'
-            )}
-          >
-            {row.original.available}
-          </span>
-        </div>
-      ),
-      size: 80,
-    },
-    {
-      accessorKey: 'distance',
-      header: 'Distance',
-      cell: ({ row }) => (
-        <div className="flex items-center gap-1 text-sm">
-          <MapPin className="h-3 w-3 text-muted-foreground" />
-          {row.original.distance}km
-        </div>
-      ),
-      size: 80,
-    },
-    {
-      accessorKey: 'minPrice',
-      header: 'Price Range',
-      cell: ({ row }) => (
-        <div className="text-sm">
-          {row.original.minPrice === row.original.maxPrice ? (
-            <span className="font-medium">{formatTHB(row.original.minPrice)}</span>
-          ) : (
-            <span>
-              {formatTHB(row.original.minPrice)} - {formatTHB(row.original.maxPrice)}
-            </span>
-          )}
-          {row.original.hasPromo && <Badge variant="secondary" className="ml-1 text-xs">Sale</Badge>}
-        </div>
-      ),
-      size: 120,
-    },
-    {
-      id: 'actions',
-      header: 'Actions',
-      cell: ({ row }) => (
-        <Button size="sm" onClick={() => openDotPicker(row.original.grouped, row.original.branchNode)} disabled={row.original.available === 0}>
-          <Plus className="h-4 w-4 mr-1" />
-          Request
-        </Button>
-      ),
-      size: 100,
-    },
-  ];
+  // build options for spec step
+  const specOptions: SpecOption[] = useMemo(() => {
+    if (!wizardProduct) return [];
+    const map = new Map<string, SpecOption>();
+    for (const b of (wizardProduct.branches ?? []) as any[]) {
+      for (const s of b.sizes ?? []) {
+        let total = 0;
+        let min = Infinity;
+        let promo = false;
+        for (const d of s.dots ?? []) {
+          const { price, hasPromo } = getEffectivePrice(d);
+          const q = getQty(d);
+          if (q > 0) {
+            total += q;
+            min = Math.min(min, price);
+          }
+          if (hasPromo) promo = true;
+        }
+        const spec = String(s.specification ?? 'N/A');
+        if (!map.has(spec)) map.set(spec, { spec, total: 0, minPrice: Infinity, hasPromo: false });
+        const prev = map.get(spec)!;
+        prev.total += total;
+        prev.minPrice = Math.min(prev.minPrice, min);
+        prev.hasPromo = prev.hasPromo || promo;
+      }
+    }
+    return Array.from(map.values())
+      .filter((o) => (inStockOnly ? o.total > 0 : true))
+      .sort((a, b) => b.total - a.total || a.minPrice - b.minPrice);
+  }, [wizardProduct, inStockOnly]);
 
-  const table = useReactTable({
-    data: rows,
-    columns,
-    state: { sorting, columnVisibility },
-    onSortingChange: setSorting,
-    onColumnVisibilityChange: setColumnVisibility,
-    getCoreRowModel: getCoreRowModel(),
-    getSortedRowModel: getSortedRowModel(),
-  });
+  // build branch list for selected spec
+  const [branchSort, setBranchSort] = useState<'distance' | 'price' | 'stock'>('distance');
+  const [branchDir, setBranchDir] = useState<'asc' | 'desc'>('asc');
+  const [onlyPromoBranch, setOnlyPromoBranch] = useState(false);
+  const [onlyInStockBranch, setOnlyInStockBranch] = useState(true);
 
-  const { rows: tableRows } = table.getRowModel();
+  const branchesForSpec: BranchForSpec[] = useMemo(() => {
+    if (!wizardProduct || !selectedSpec) return [];
+    const list: BranchForSpec[] = [];
+    for (const b of (wizardProduct.branches ?? []) as any[]) {
+      let total = 0;
+      let min = Infinity;
+      let max = 0;
+      let promo = false;
+      for (const s of b.sizes ?? []) {
+        if (String(s.specification ?? '') !== selectedSpec.spec) continue;
+        for (const d of s.dots ?? []) {
+          const { price, hasPromo } = getEffectivePrice(d);
+          const q = getQty(d);
+          if (q > 0) {
+            total += q;
+            min = Math.min(min, price);
+            max = Math.max(max, price);
+          }
+          if (hasPromo) promo = true;
+        }
+      }
+      if (onlyInStockBranch && total <= 0) continue;
+      if (onlyPromoBranch && !promo) continue;
 
-  // --- Dynamic row heights for expanded content
-  const virtualizer = useVirtualizer({
-    count: tableRows.length,
-    getScrollElement: () => tableContainerRef.current,
-    estimateSize: () => 60,
-    overscan: 10,
-    measureElement: (el) => (el ? el.getBoundingClientRect().height : 60),
-  });
+      list.push({
+        branchId: String(b.branchId),
+        branchName: b.branchName as string,
+        distance: getDistanceKm(String(b.branchId)),
+        available: total,
+        minPrice: safeMin(min),
+        hasPromo: promo,
+        node: b,
+        maxPrice: max,
+      });
+    }
+    const dir = branchDir === 'asc' ? 1 : -1;
+    list.sort((a, b) => {
+      const byPrice = () => (a.minPrice - b.minPrice) * dir;
+      const byDist = () => (a.distance - b.distance) * dir;
+      const byStock = () => (b.available - a.available) * dir;
+      return branchSort === 'price' ? byPrice() || byDist() || byStock()
+        : branchSort === 'stock' ? byStock() || byPrice() || byDist()
+        : byDist() || byPrice() || byStock();
+    });
+    return list;
+  }, [wizardProduct, selectedSpec, branchSort, branchDir, onlyPromoBranch, onlyInStockBranch]);
 
-  // UI components
+  // when choose branch → build DOT picks
+  const loadDotPicks = (branch: BranchForSpec) => {
+    if (!wizardProduct || !selectedSpec) return;
+    const picks: PickRow[] = [];
+    for (const s of (branch.node?.sizes ?? []) as any[]) {
+      if (String(s.specification ?? '') !== selectedSpec.spec) continue;
+      for (const d of s.dots ?? []) {
+        const { price, hasPromo } = getEffectivePrice(d);
+        const q = getQty(d);
+        if (q > 0) {
+          picks.push({
+            sizeSpec: selectedSpec.spec,
+            variantId: String(s.variantId ?? ''),
+            dotCode: String(d.dotCode ?? ''),
+            available: q,
+            price,
+            hasPromo,
+            selected: 0,
+          });
+        }
+      }
+    }
+    picks.sort((a, b) => b.available - a.available || a.price - b.price);
+    setDotPicks(picks);
+  };
+
+  const changePick = (dotCode: string, variantId: string, delta: number) => {
+    setDotPicks((picks) =>
+      picks.map((p) =>
+        p.dotCode === dotCode && p.variantId === variantId
+          ? { ...p, selected: Math.max(0, Math.min(p.available, p.selected + delta)) }
+          : p
+      )
+    );
+  };
+
+  // one-branch rule confirm
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const confirmClearRef = useRef<{ onConfirm?: () => void }>({});
+
+  const addToCart = () => {
+    if (!wizardProduct || !selectedBranch) return;
+    const items = dotPicks.filter((p) => p.selected > 0);
+    if (items.length === 0) {
+      toast.info('Please select quantity.');
+      return;
+    }
+    if (cart.length > 0 && cart[0].branchId !== selectedBranch.branchId) {
+      confirmClearRef.current.onConfirm = () => {
+        setCart([]);
+        _add(items);
+      };
+      setConfirmClearOpen(true);
+      return;
+    }
+    _add(items);
+  };
+
+  const _add = (items: PickRow[]) => {
+    if (!wizardProduct || !selectedBranch) return;
+    const newItems: CartItemView[] = items.map((it) => ({
+      branchId: selectedBranch.branchId,
+      branchName: selectedBranch.branchName,
+      productId: wizardProduct.id,
+      productName: wizardProduct.name,
+      specification: it.sizeSpec,
+      dotCode: it.dotCode,
+      quantity: it.selected,
+      variantId: it.variantId,
+      maxQty: it.available,
+    }));
+
+    setCart((prev) => {
+      const other = prev.filter((x) => x.branchId !== selectedBranch.branchId);
+      const same = prev.filter((x) => x.branchId === selectedBranch.branchId);
+      newItems.forEach((ni) => {
+        const idx = same.findIndex((x) => x.dotCode === ni.dotCode && x.variantId === ni.variantId);
+        if (idx > -1) same[idx] = ni;
+        else same.push(ni);
+      });
+      return [...other, ...same].filter((x) => x.quantity > 0);
+    });
+
+    setWizardOpen(false);
+    setIsCartOpen(true);
+    toast.success('Cart updated');
+  };
+
+  // ---------- UI blocks ----------
   const HeaderBar = (
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div className="space-y-1">
@@ -690,8 +591,9 @@ export default function TransferPlatformViewRedesign({
           <h1 className="text-2xl font-bold tracking-tight">Transfer Platform</h1>
           <Sparkles className="h-5 w-5 text-amber-500" />
         </div>
-        <p className="text-muted-foreground">
-          ค้นหาและขอสินค้าจากสาขาอื่น • {lastUpdated ? <span className="text-xs">อัปเดต {lastUpdated.toLocaleTimeString()}</span> : null}
+        <p className="text-muted-foreground flex items-center gap-2">
+          <span>ค้นหาและขอสินค้าจากสาขาอื่น</span>
+          {lastUpdated ? <span className="text-xs">• อัปเดต {lastUpdated.toLocaleTimeString()}</span> : null}
         </p>
       </div>
       <div className="flex items-center gap-2">
@@ -699,15 +601,45 @@ export default function TransferPlatformViewRedesign({
           <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as any)}>
             <TabsList>
               <TabsTrigger value="grid" className="gap-1"><LayoutGrid className="h-4 w-4" /> Cards</TabsTrigger>
-              <TabsTrigger value="table" className="gap-1"><TableIcon className="h-4 w-4" /> Table</TabsTrigger>
+              <TabsTrigger value="table" className="gap-1" disabled><span className="opacity-60">Table</span></TabsTrigger>
             </TabsList>
           </Tabs>
         </div>
+
+        <div className="hidden md:flex items-center gap-1 rounded-full border px-2 py-1 bg-white shadow-sm">
+          <span className="text-xs text-muted-foreground mr-1">Sort</span>
+          <Button
+            variant={sortBy === 'price' ? 'default' : 'ghost'}
+            size="sm"
+            className="rounded-full"
+            onClick={() => setSortBy('price')}
+          >
+            Price
+          </Button>
+          <Button
+            variant={sortBy === 'brand' ? 'default' : 'ghost'}
+            size="sm"
+            className="rounded-full"
+            onClick={() => setSortBy('brand')}
+          >
+            Brand
+          </Button>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="rounded-full"
+            onClick={() => setSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
+            title={sortDir === 'asc' ? 'Ascending' : 'Descending'}
+          >
+            {sortDir === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+          </Button>
+        </div>
+
         <Button variant="outline" size="sm" onClick={() => invQuery.refetch()}>
           <RefreshCw className="h-4 w-4 mr-2" />
           Refresh
         </Button>
-        <Button variant="outline" size="sm" onClick={exportCSV}>
+        <Button variant="outline" size="sm" onClick={() => exportCSV(productRows)}>
           <Download className="h-4 w-4 mr-2" />
           Export CSV
         </Button>
@@ -715,6 +647,68 @@ export default function TransferPlatformViewRedesign({
           <ShoppingCart className="h-4 w-4 mr-2" />
           Cart ({cartCount})
         </Button>
+      </div>
+    </div>
+  );
+
+  const FilterBar = (
+    <div className="sticky top-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-background/80 bg-background/95 border-b">
+      <div className="p-4 md:p-6 max-w-screen-xl mx-auto">
+        <div className="w-full space-y-4">
+          <div className="flex items-center gap-3">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input placeholder="Search products, brands..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10" />
+            </div>
+            <Select value={sortBy} onValueChange={(v) => setSortBy(v as any)}>
+              <SelectTrigger className="w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="relevance">Most Relevant</SelectItem>
+                <SelectItem value="price">Price</SelectItem>
+                <SelectItem value="brand">Brand A-Z</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex items-center gap-3 flex-wrap">
+            <Select value={selectedBrand} onValueChange={setSelectedBrand}>
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="All Brands" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="All Brands">All Brands</SelectItem>
+                {availableBrands.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <div className="flex items-center gap-2">
+              <Switch checked={inStockOnly} onCheckedChange={(v) => setInStockOnly(Boolean(v))} />
+              <Label>In Stock Only</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch checked={hasPromotion} onCheckedChange={(v) => setHasPromotion(Boolean(v))} />
+              <Label>On Sale</Label>
+            </div>
+            {(selectedBrand !== 'All Brands' || !inStockOnly || hasPromotion || searchTerm) && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setSelectedBrand('All Brands');
+                  setInStockOnly(true);
+                  setHasPromotion(false);
+                  setSearchTerm('');
+                  toast.info('Filters cleared');
+                }}
+                className="text-muted-foreground"
+              >
+                <X className="h-4 w-4 mr-1" />
+                Clear
+              </Button>
+            )}
+          </div>
+        </div>
       </div>
     </div>
   );
@@ -740,170 +734,66 @@ export default function TransferPlatformViewRedesign({
     </div>
   );
 
-  const FilterBar = (
-    <div className="sticky top-0 z-20 backdrop-blur supports-[backdrop-filter]:bg-background/80 bg-background/95 border-b">
-      <div className="p-4 md:p-6 max-w-screen-xl mx-auto">
-        <div className="w-full space-y-4">
-          {/* Search + Sort + View */}
-          <div className="flex items-center gap-3">
-            <div className="relative flex-1">
-              <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-              <Input placeholder="Search products, brands, or stores..." value={searchTerm} onChange={(e) => setSearchTerm(e.target.value)} className="pl-10" />
-            </div>
-            <div className="sm:hidden">
-              <Button variant="outline" size="icon" onClick={() => setViewMode(viewMode === 'grid' ? 'table' : 'grid')} aria-label="Toggle view">
-                {viewMode === 'grid' ? <TableIcon className="h-4 w-4" /> : <LayoutGrid className="h-4 w-4" />}
-              </Button>
-            </div>
-            <Select value={sortBy} onValueChange={(v) => setSortBy(v as any)}>
-              <SelectTrigger className="w-44">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="relevance">Most Relevant</SelectItem>
-                <SelectItem value="price-low">Price: Low to High</SelectItem>
-                <SelectItem value="price-high">Price: High to Low</SelectItem>
-                <SelectItem value="rating">Highest Rated</SelectItem>
-                <SelectItem value="popular">Most Popular</SelectItem>
-                <SelectItem value="distance">Nearest First</SelectItem>
-                <SelectItem value="brand">Brand A-Z</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-
-          {/* Filter Row */}
-          <div className="flex items-center gap-3 flex-wrap">
-            <Select value={selectedBrand} onValueChange={setSelectedBrand}>
-              <SelectTrigger className="w-36">
-                <SelectValue placeholder="All Brands" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="All Brands">All Brands</SelectItem>
-                {availableBrands.map((brand) => (
-                  <SelectItem key={brand} value={brand}>
-                    {brand}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={selectedSize} onValueChange={setSelectedSize}>
-              <SelectTrigger className="w-40">
-                <SelectValue placeholder="All Sizes" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="All Sizes">All Sizes</SelectItem>
-                {availableSizes.map((size) => (
-                  <SelectItem key={size} value={size}>
-                    {size}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-
-            <Select value={selectedStore} onValueChange={setSelectedStore}>
-              <SelectTrigger className="w-48">
-                <SelectValue placeholder="All Branches" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Branches</SelectItem>
-                {activeBranchIds
-                  .filter((id) => String(id) !== String(myBranchId))
-                  .map((id) => (
-                    <SelectItem key={id} value={id}>
-                      {stores[id] ?? id}
-                    </SelectItem>
-                  ))}
-              </SelectContent>
-            </Select>
-
-            <div className="flex items-center gap-2">
-              <Switch checked={inStockOnly} onCheckedChange={(v) => setInStockOnly(Boolean(v))} />
-              <Label>In Stock Only</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch checked={lowStockOnly} onCheckedChange={(v) => setLowStockOnly(Boolean(v))} />
-              <Label>Low Stock (&lt; 6)</Label>
-            </div>
-            <div className="flex items-center gap-2">
-              <Switch checked={hasPromotion} onCheckedChange={(v) => setHasPromotion(Boolean(v))} />
-              <Label>On Sale</Label>
-            </div>
-            
-            {/* --- NEW: Clear Filters Button --- */}
-            {isFiltered && (
-              <Button variant="ghost" size="sm" onClick={clearFilters} className="text-muted-foreground">
-                <X className="h-4 w-4 mr-1" />
-                Clear
-              </Button>
-            )}
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-
-  // ---- Card View (mobile-first)
-  const GridCard = ({ r }: { r: TPRow }) => (
+  const ProductCard: React.FC<{ r: ProductRow }> = ({ r }) => (
     <motion.div
       layout
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       whileHover={{ y: -2 }}
-      className="group relative rounded-2xl border bg-white shadow-sm overflow-hidden"
+      className="group relative rounded-2xl border bg-white shadow-sm overflow-hidden hover:shadow-md transition-shadow"
     >
-      <div className="absolute right-3 top-3 z-10">
-        {r.hasPromo ? <Badge className="bg-green-600 hover:bg-green-600 text-white">Sale</Badge> : null}
-      </div>
       <div className="p-4 space-y-3">
         <div className="flex items-start justify-between gap-3">
           <div className="min-w-0">
-            <div className="text-sm text-muted-foreground truncate">{r.brand}{r.model ? ` • ${r.model}` : ''}</div>
-            <h3 className="font-semibold leading-tight truncate">{r.productName}</h3>
+            <div className="text-xs text-muted-foreground uppercase tracking-wide">{r.brand}{r.model ? ` • ${r.model}` : ''}</div>
+            <h3 className="font-semibold leading-tight truncate text-lg">{r.productName}</h3>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {r.hasPromoAny && <Badge className="bg-green-600 hover:bg-green-600 text-white">Sale</Badge>}
+            <Button size="sm" variant="outline" className="rounded-full" onClick={() => openWizard(r.grouped)}>
+              Details
+            </Button>
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-2 text-xs">
-          <div className="rounded-lg border p-2 text-center">
-            <div className={cn(
-              'text-lg font-bold',
-              r.available === 0 ? 'text-red-600' : r.available < 6 ? 'text-amber-600' : 'text-green-600'
-            )}>{r.available}</div>
+        <div className="grid grid-cols-2 gap-2 text-xs">
+          <div className="rounded-xl border bg-muted/40 px-3 py-2 text-center">
+            <div className={cn('text-lg font-bold', r.totalAvailable === 0 ? 'text-red-600' : r.totalAvailable < 6 ? 'text-amber-600' : 'text-green-600')}>
+              {r.totalAvailable}
+            </div>
             <div className="text-muted-foreground">units</div>
           </div>
-          <div className="rounded-lg border p-2 text-center">
-            <div className="flex items-center justify-center gap-1">
-              <MapPin className="h-3 w-3 text-muted-foreground" />
-              <span className="text-lg font-bold">{r.distance}</span>
-            </div>
-            <div className="text-muted-foreground">km</div>
-          </div>
-          <div className="rounded-lg border p-2 text-center">
-            <div className="text-sm font-semibold">{formatTHB(r.minPrice)}</div>
+          <div className="rounded-xl border bg-muted/40 px-3 py-2 text-center">
+            <div className="text-sm font-semibold">{formatTHB(r.minPriceAll)}</div>
             <div className="text-muted-foreground">from</div>
           </div>
-        </div>
-
-        <div className="flex flex-wrap gap-1">
-          {r.dotChips.map((d, i) => (
-            <Badge key={`${r.key}-${d.dotCode}-${i}`} variant="outline" className="font-mono">{d.dotCode} · {d.qty}</Badge>
-          ))}
-        </div>
-
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Building2 className="h-4 w-4" />
-            <span className="truncate max-w-[180px]">{r.branchName}</span>
-          </div>
-          <Button size="sm" onClick={() => openDotPicker(r.grouped, r.branchNode)} disabled={r.available === 0 || r.branchId === myBranchId}>
-            <Plus className="h-4 w-4 mr-1" />
-            Request
-          </Button>
         </div>
       </div>
     </motion.div>
   );
 
+  // ------- Export CSV -------
+  function exportCSV(rows: ProductRow[]) {
+    const header = ['Product', 'Brand', 'Model', 'Units', 'Min Price'];
+    const rowsAsText = rows.map((r) =>
+      [r.productName, r.brand, r.model ?? '', r.totalAvailable, r.minPriceAll]
+        .map((x) => `"${String(x).replace(/"/g, '""')}"`)
+        .join(',')
+    );
+    const csvText = [header.join(','), ...rowsAsText].join('\n');
+    const BOM = '\uFEFF';
+    const blob = new Blob([BOM + csvText], { type: 'text/csv;charset=utf-8;' });
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transfer_products_${new Date().toISOString().slice(0, 19)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.URL.revokeObjectURL(url);
+  }
+
+  // ------- Loading -------
   if (isLoading) {
     return (
       <div className="w-full min-h-screen bg-background">
@@ -939,293 +829,221 @@ export default function TransferPlatformViewRedesign({
         {KpiBar}
 
         {/* Content */}
-        {viewMode === 'grid' ? (
-          <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="text-sm text-muted-foreground">
-                {rows.length} items • {kpis.branches} branches
-              </div>
-              <div className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">
-                  {rows.filter((r) => r.hasPromo).length} on sale
-                </Badge>
-                <Badge variant="outline" className="text-xs">
-                  {rows.filter((r) => r.available < 6 && r.available > 0).length} low stock
-                </Badge>
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {rows.map((r) => (<GridCard key={r.key} r={r} />))}
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="text-sm text-muted-foreground flex items-center gap-2">
+              <span>{productRows.length} products</span>
             </div>
           </div>
-        ) : (
-          <Card className="rounded-xl border bg-white overflow-hidden shadow-sm">
-            <CardHeader className="border-b bg-muted/20">
-              <div className="flex items-center justify-between">
-                <div>
-                  <CardTitle className="text-lg">Available Inventory</CardTitle>
-                  <CardDescription className="mt-1">
-                    {rows.length} items found across {kpis.branches} branches • Click on rows to see details
-                  </CardDescription>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="outline" className="text-xs">
-                    {rows.filter((r) => r.hasPromo).length} on sale
-                  </Badge>
-                  <Badge variant="outline" className="text-xs">
-                    {rows.filter((r) => r.available < 6 && r.available > 0).length} low stock
-                  </Badge>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent className="p-0">
-              <div className="border-0">
-                {/* Table Header */}
-                <div className="grid gap-4 px-4 py-3 text-xs font-medium text-muted-foreground bg-muted/30 border-b sticky top-[57px] z-10">
-                  <div style={{ gridTemplateColumns: '40px 1fr 160px 80px 80px 120px 100px' }} className="grid gap-4">
-                    <div></div>
-                    <div>Product & Details</div>
-                    <div>Source Branch</div>
-                    <div className="text-center">Available</div>
-                    <div>Distance</div>
-                    <div>Price Range</div>
-                    <div>Actions</div>
-                  </div>
-                </div>
 
-                {/* Virtualized Table Body */}
-                <div ref={tableContainerRef} className="h-[640px] overflow-auto">
-                  <div style={{ height: `${virtualizer.getTotalSize()}px`, position: 'relative' }}>
-                    {virtualizer.getVirtualItems().map((virtualRow) => {
-                      const row = tableRows[virtualRow.index];
-                      const rowData = row.original;
-                      const isExpanded = expandedRow === rowData.key;
-
-                      return (
-                        <div
-                          key={virtualRow.key}
-                          ref={virtualizer.measureElement}
-                          data-index={virtualRow.index}
-                          style={{ position: 'absolute', top: 0, left: 0, width: '100%', transform: `translateY(${virtualRow.start}px)` }}
-                        >
-                          <div className="border-b hover:bg-muted/20 transition-colors">
-                            {/* Main Row */}
-                            <div style={{ gridTemplateColumns: '40px 1fr 160px 80px 80px 120px 100px' }} className="grid gap-4 px-4 py-3 items-center">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => setExpandedRow(isExpanded ? null : rowData.key)}
-                                className="h-8 w-8 p-0"
-                              >
-                                {isExpanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-                              </Button>
-
-                              <div className="min-w-0">
-                                <div className="font-medium truncate">{rowData.productName}</div>
-                                <div className="text-sm text-muted-foreground truncate">
-                                  {rowData.brand} {rowData.model && `• ${rowData.model}`}
-                                </div>
-                                <div className="text-xs text-muted-foreground mt-1">
-                                  {rowData.spec} • {rowData.dotsAll.length} variants
-                                  {rowData.hasPromo && (
-                                    <Badge variant="secondary" className="ml-2 text-xs bg-green-100 text-green-800">
-                                      On Sale
-                                    </Badge>
-                                  )}
-                                </div>
-                              </div>
-
-                              <div className="flex items-center gap-2">
-                                <Building2 className="h-4 w-4 text-muted-foreground" />
-                                <div className="min-w-0">
-                                  <div className="font-medium text-sm truncate">{rowData.branchName}</div>
-                                  <div className="text-xs text-muted-foreground">
-                                    {rowData.branchId === myBranchId ? 'Your Branch' : 'Source'}
-                                  </div>
-                                </div>
-                              </div>
-
-                              <div className="text-center">
-                                <div className={cn(
-                                  'text-lg font-bold',
-                                  rowData.available === 0 ? 'text-red-600' : rowData.available < 6 ? 'text-amber-600' : 'text-green-600'
-                                )}>
-                                  {rowData.available}
-                                </div>
-                                <div className="text-xs text-muted-foreground">units</div>
-                              </div>
-
-                              <div className="text-center">
-                                <div className="flex items-center justify-center gap-1 text-sm">
-                                  <MapPin className="h-3 w-3 text-muted-foreground" />
-                                  <span className="font-medium">{rowData.distance}</span>
-                                </div>
-                                <div className="text-xs text-muted-foreground">km</div>
-                              </div>
-
-                              <div className="text-center">
-                                {rowData.minPrice === rowData.maxPrice ? (
-                                  <div className="font-semibold text-sm">{formatTHB(rowData.minPrice)}</div>
-                                ) : (
-                                  <div className="space-y-1">
-                                    <div className="text-xs text-muted-foreground">
-                                      {formatTHB(rowData.minPrice)} - {formatTHB(rowData.maxPrice)}
-                                    </div>
-                                  </div>
-                                )}
-                                {rowData.hasPromo && (
-                                  <Badge variant="secondary" className="text-xs bg-green-100 text-green-800">
-                                    Sale
-                                  </Badge>
-                                )}
-                              </div>
-
-                              <Button
-                                size="sm"
-                                onClick={() => openDotPicker(rowData.grouped, rowData.branchNode)}
-                                disabled={rowData.available === 0 || rowData.branchId === myBranchId}
-                                title={rowData.branchId === myBranchId ? 'Cannot request from your own branch' : 'Request items'}
-                              >
-                                <Plus className="h-4 w-4 mr-1" />
-                                Request
-                              </Button>
-                            </div>
-
-                            {/* Expanded Details */}
-                            <AnimatePresence>
-                              {isExpanded && (
-                                <motion.div
-                                  initial={{ height: 0, opacity: 0 }}
-                                  animate={{ height: 'auto', opacity: 1 }}
-                                  exit={{ height: 0, opacity: 0 }}
-                                  transition={{ duration: 0.2 }}
-                                  className="overflow-hidden"
-                                >
-                                  <div className="px-4 py-3 bg-muted/20 border-t">
-                                    <div className="space-y-4">
-                                      {/* Quick Stats */}
-                                      <div className="grid grid-cols-3 gap-4">
-                                        <div className="text-center p-3 bg-white rounded-lg border">
-                                          <div className="text-lg font-bold text-blue-600">{rowData.dotsAll.length}</div>
-                                          <div className="text-xs text-muted-foreground">DOT Variants</div>
-                                        </div>
-                                        <div className="text-center p-3 bg-white rounded-lg border">
-                                          <div className="text-lg font-bold text-green-600">{rowData.available}</div>
-                                          <div className="text-xs text-muted-foreground">Total Units</div>
-                                        </div>
-                                        <div className="text-center p-3 bg-white rounded-lg border">
-                                          <div className="text-lg font-bold text-purple-600">{formatTHB(rowData.minPrice)}</div>
-                                          <div className="text-xs text-muted-foreground">Starting Price</div>
-                                        </div>
-                                      </div>
-
-                                      {/* DOT Details */}
-                                      <div>
-                                        <h4 className="font-medium mb-3 text-sm">Available DOT Codes</h4>
-                                        <div className="grid gap-2 max-h-48 overflow-y-auto">
-                                          {rowData.dotsAll.map((dot, idx) => (
-                                            <div key={`${dot.dotCode}-${idx}`} className="flex items-center justify-between p-2 bg-white rounded border hover:border-blue-200 transition-colors">
-                                              <div className="flex items-center gap-3">
-                                                <Badge variant="outline" className="font-mono text-xs">{dot.dotCode}</Badge>
-                                                <span className="text-sm text-muted-foreground">{dot.spec}</span>
-                                                {dot.hasPromo && (
-                                                  <Badge variant="secondary" className="text-xs bg-green-100 text-green-800">Sale</Badge>
-                                                )}
-                                              </div>
-                                              <div className="flex items-center gap-3">
-                                                <span className="text-sm font-medium">{dot.qty} units</span>
-                                                <div className="text-right">
-                                                  <div className={cn('text-sm font-medium', dot.hasPromo ? 'text-green-600' : undefined)}>{formatTHB(dot.price)}</div>
-                                                  {dot.hasPromo && dot.basePrice !== dot.price && (
-                                                    <div className="text-xs text-muted-foreground line-through">{formatTHB(dot.basePrice)}</div>
-                                                  )}
-                                                </div>
-                                              </div>
-                                            </div>
-                                          ))}
-                                        </div>
-                                      </div>
-
-                                      {/* Action Button */}
-                                      <div className="pt-2 border-t">
-                                        <Button className="w-full" onClick={() => openDotPicker(rowData.grouped, rowData.branchNode)} disabled={rowData.available === 0 || rowData.branchId === myBranchId}>
-                                          <Plus className="h-4 w-4 mr-2" />
-                                          {rowData.branchId === myBranchId ? 'Cannot request from own branch' : 'Request Transfer'}
-                                        </Button>
-                                      </div>
-                                    </div>
-                                  </div>
-                                </motion.div>
-                              )}
-                            </AnimatePresence>
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+          {productRows.length === 0 ? (
+            <Card className="p-8 text-center">
+              <div className="text-sm text-muted-foreground">No results. Try clearing filters or clicking <b>Refresh</b>.</div>
+            </Card>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {productRows.map((r) => (<ProductCard key={r.key} r={r} />))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Mobile Cart FAB */}
-      <AnimatePresence>
-        {cartCount > 0 && (
-          <motion.div
-            initial={{ y: 80, opacity: 0 }}
-            animate={{ y: 0, opacity: 1 }}
-            exit={{ y: 80, opacity: 0 }}
-            className="fixed bottom-4 left-0 right-0 z-30 flex justify-center sm:hidden"
-          >
-            <Button onClick={() => setIsCartOpen(true)} className="rounded-full shadow-lg px-6 py-6">
-              <ShoppingCart className="h-4 w-4 mr-2" />
-              View Cart ({cartCount} items)
-            </Button>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* Dot Picker Dialog */}
-      <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-        <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
+      {/* ---------- Wizard Dialog ---------- */}
+      <Dialog
+        open={wizardOpen}
+        onOpenChange={(open) => {
+          setWizardOpen(open);
+          if (!open) setStep('spec');
+        }}
+      >
+        <DialogContent className="sm:max-w-3xl max-h-[85vh] overflow-y-auto">
           <DialogHeader>
-            <DialogTitle>Select Quantities</DialogTitle>
-            <DialogDescription>{activeProduct?.name} from {activeBranch?.branchName}</DialogDescription>
-          </DialogHeader>
-          <div className="space-y-4">
-            {dotPicks.map((pick) => (
-              <div key={`${pick.dotCode}_${pick.variantId}`} className="flex items-center justify-between p-3 border rounded-lg">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2">
-                    <Badge variant="outline">{pick.dotCode}</Badge>
-                    <span className="text-sm">{pick.sizeSpec}</span>
-                    {pick.hasPromo && <Badge variant="secondary" className="text-xs">Sale</Badge>}
-                  </div>
-                  <div className="text-sm text-muted-foreground mt-1">Available: {pick.available} units • {formatTHB(pick.price)}</div>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Button variant="outline" size="sm" onClick={() => handlePickChange(pick.dotCode, pick.variantId, -1)} disabled={pick.selected === 0}>
-                    <Minus className="h-4 w-4" />
-                  </Button>
-                  <span className="w-12 text-center">{pick.selected}</span>
-                  <Button variant="outline" size="sm" onClick={() => handlePickChange(pick.dotCode, pick.variantId, 1)} disabled={pick.selected >= pick.available}>
-                    <Plus className="h-4 w-4" />
-                  </Button>
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2 min-w-0">
+                <Button variant="ghost" size="icon" onClick={goBack} disabled={!canGoBack} aria-label="ย้อนกลับ" className="shrink-0">
+                  <ChevronLeft className="h-5 w-5" />
+                </Button>
+                <div className="min-w-0">
+                  <DialogTitle className="truncate">{wizardProduct?.name ?? 'Select'}</DialogTitle>
+                  <DialogDescription className="truncate">
+                    {wizardProduct?.brand} {wizardProduct?.model ? `• ${wizardProduct?.model}` : ''}
+                  </DialogDescription>
                 </div>
               </div>
-            ))}
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setIsDialogOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddToCart}>Add to Cart</Button>
-          </DialogFooter>
+              <div className="hidden sm:flex items-center gap-2 text-xs">
+                <span className={step === 'spec' ? 'font-semibold' : 'text-muted-foreground'}>1. Spec</span>
+                <span>•</span>
+                <span className={step === 'branch' ? 'font-semibold' : 'text-muted-foreground'}>2. Branch</span>
+                <span>•</span>
+                <span className={step === 'dot' ? 'font-semibold' : 'text-muted-foreground'}>3. DOT</span>
+              </div>
+            </div>
+          </DialogHeader>
+
+          {/* Step contents */}
+          {step === 'spec' && (
+            <div className="space-y-3">
+              <div className="text-sm text-muted-foreground">เลือกขนาด/โหลดอินเด็กซ์ (Spec)</div>
+              <div className="grid sm:grid-cols-2 gap-3">
+                {specOptions.map((o) => (
+                  <button
+                    key={o.spec}
+                    onClick={() => {
+                      setSelectedSpec(o);
+                      setStep('branch');
+                    }}
+                    className={cn(
+                      'rounded-xl border p-3 text-left hover:border-blue-300 hover:bg-blue-50/40 transition-colors',
+                      selectedSpec?.spec === o.spec && 'border-blue-500 ring-2 ring-blue-100'
+                    )}
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium">{o.spec}</div>
+                      {o.hasPromo && <Badge className="bg-green-600 hover:bg-green-600 text-white">Sale</Badge>}
+                    </div>
+                    <div className="mt-1 text-xs text-muted-foreground flex items-center gap-3">
+                      <span>{o.total} units</span>
+                      <span>•</span>
+                      <span>{formatTHB(o.minPrice)} from</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              {!specOptions.length && (
+                <div className="text-center text-muted-foreground py-6 text-sm">No spec available.</div>
+              )}
+            </div>
+          )}
+
+          {step === 'branch' && selectedSpec && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="text-sm">
+                  Spec: <span className="font-medium">{selectedSpec.spec}</span>
+                </div>
+                <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  Sort
+                  <div className="flex items-center gap-1">
+                    <Button size="sm" variant={branchSort === 'distance' ? 'default' : 'ghost'} onClick={() => setBranchSort('distance')}>Distance</Button>
+                    <Button size="sm" variant={branchSort === 'price' ? 'default' : 'ghost'} onClick={() => setBranchSort('price')}>Price</Button>
+                    <Button size="sm" variant={branchSort === 'stock' ? 'default' : 'ghost'} onClick={() => setBranchSort('stock')}>Stock</Button>
+                    <Button size="sm" variant="ghost" onClick={() => setBranchDir((d) => (d === 'asc' ? 'desc' : 'asc'))}>
+                      {branchDir === 'asc' ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+                    </Button>
+                  </div>
+                  <span className="ml-2" />
+                  <Filter className="h-3.5 w-3.5" />
+                  <div className="flex items-center gap-2">
+                    <Switch checked={onlyInStockBranch} onCheckedChange={(v) => setOnlyInStockBranch(Boolean(v))} />
+                    <span>In stock</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Switch checked={onlyPromoBranch} onCheckedChange={(v) => setOnlyPromoBranch(Boolean(v))} />
+                    <span>On sale</span>
+                  </div>
+                </div>
+              </div>
+
+              <Separator />
+
+              <div className="space-y-2">
+                {branchesForSpec.length === 0 ? (
+                  <div className="text-center text-muted-foreground text-sm py-6">No branches match filters.</div>
+                ) : branchesForSpec.map((br) => (
+                  <div key={br.branchId} className="flex items-center justify-between p-3 bg-muted/40 rounded-xl border hover:bg-muted/60 transition-colors">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <Badge variant="outline" className="font-mono text-xs">{stores[br.branchId] ?? br.branchName}</Badge>
+                      <span className="text-xs text-muted-foreground flex items-center gap-1">
+                        <MapPin className="h-3 w-3" /> {br.distance} km
+                      </span>
+                      {br.hasPromo && <Badge variant="secondary" className="text-xs bg-green-100 text-green-800">Sale</Badge>}
+                      {String(br.branchId) === String(myBranchId) && <Badge variant="outline" className="text-xs">Your branch</Badge>}
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <span className="text-sm font-medium">{br.available} units</span>
+                      <div className="text-right">
+                        <div className="text-sm font-semibold">{formatTHB(br.minPrice)}</div>
+                      </div>
+                      <Button
+                        size="sm"
+                        onClick={() => {
+                          setSelectedBranch(br);
+                          loadDotPicks(br);
+                          setStep('dot');
+                        }}
+                        disabled={br.available === 0 || String(br.branchId) === String(myBranchId)}
+                      >
+                        <Plus className="h-4 w-4 mr-1" />
+                        Select
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {step === 'dot' && selectedSpec && selectedBranch && (
+            <div className="space-y-3">
+              <div className="text-sm">
+                Spec: <span className="font-medium">{selectedSpec.spec}</span> • Branch:{' '}
+                <span className="font-medium">{stores[selectedBranch.branchId] ?? selectedBranch.branchName}</span>
+              </div>
+              <div className="space-y-2">
+                {dotPicks.map((p) => (
+                  <div key={`${p.dotCode}_${p.variantId}`} className="flex items-center justify-between p-3 border rounded-lg">
+                    <div className="flex-1">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline">{p.dotCode}</Badge>
+                        {p.hasPromo && <Badge variant="secondary" className="text-xs">Sale</Badge>}
+                      </div>
+                      <div className="text-sm text-muted-foreground mt-1">Available: {p.available} • {formatTHB(p.price)}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={() => changePick(p.dotCode, p.variantId, -1)} disabled={p.selected === 0}>
+                        <Minus className="h-4 w-4" />
+                      </Button>
+                      <span className="w-12 text-center">{p.selected}</span>
+                      <Button variant="outline" size="sm" onClick={() => changePick(p.dotCode, p.variantId, 1)} disabled={p.selected >= p.available}>
+                        <Plus className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+                {!dotPicks.length && <div className="text-center text-muted-foreground text-sm py-6">No DOT available.</div>}
+              </div>
+
+              <div className="mt-2 flex items-center justify-between gap-2">
+                <Button variant="ghost" onClick={goBack}>
+                  <ChevronLeft className="mr-1 h-4 w-4" />
+                  ย้อนกลับ
+                </Button>
+                <div className="flex items-center gap-2">
+                  <Button variant="outline" onClick={() => setWizardOpen(false)}>Cancel</Button>
+                  <Button onClick={addToCart}>Add to Cart</Button>
+                </div>
+              </div>
+            </div>
+          )}
         </DialogContent>
       </Dialog>
+
+      {/* One-branch confirm */}
+      <AlertDialog open={confirmClearOpen} onOpenChange={setConfirmClearOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Start a new request from another branch?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Your cart currently has items from <b>{cart[0]?.branchName}</b>. To request from a different branch, the cart must be cleared.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={() => confirmClearRef.current.onConfirm?.()}>Clear & Continue</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* Cart Sheet */}
       <Sheet open={isCartOpen} onOpenChange={setIsCartOpen}>
@@ -1269,21 +1087,9 @@ export default function TransferPlatformViewRedesign({
                 </div>
 
                 <div className="flex gap-2">
-                  <Button variant="outline" onClick={() => setCart([])} className="flex-1">
-                    Clear Cart
-                  </Button>
+                  <Button variant="outline" onClick={() => setCart([])} className="flex-1">Clear Cart</Button>
                   <Button onClick={handleSubmitOrder} disabled={isSubmitting} className="flex-1">
-                    {isSubmitting ? (
-                      <>
-                        <RefreshCw className="h-4 w-4 mr-2 animate-spin" />
-                        Sending...
-                      </>
-                    ) : (
-                      <>
-                        <Truck className="h-4 w-4 mr-2" />
-                        Send Request
-                      </>
-                    )}
+                    {isSubmitting ? (<><RefreshCw className="h-4 w-4 mr-2 animate-spin" />Sending...</>) : (<><Truck className="h-4 w-4 mr-2" />Send Request</>)}
                   </Button>
                 </div>
               </>

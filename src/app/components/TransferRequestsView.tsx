@@ -20,6 +20,10 @@ import {
   CircleAlert,
   Tags,
   RefreshCw,
+  Calendar,
+  Factory,
+  User,
+  Info,
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 
@@ -45,6 +49,15 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from '@/components/ui/tooltip';
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+  SheetFooter,
+  SheetClose,
+} from '@/components/ui/sheet';
 
 // Services & Types
 import { OrderService, type Order, type OrderItem, type OrderStatus } from '@/lib/services/InventoryService';
@@ -245,7 +258,7 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
         e.preventDefault();
         const idx = activePane === 'incoming' ? focusedIdxIncoming : focusedIdxOutgoing;
         const order = list[idx];
-        if (order?.id) toggleExpanded(order.id);
+        if (order?.id) openSheet(order); // เปิด drawer เมื่อกด Enter
       }
     };
     window.addEventListener('keydown', onKey);
@@ -257,6 +270,14 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
 
   const [modal, setModal] = useState<{ open: boolean; type: 'reject' | 'cancel' | null; orderId: string | null }>({ open: false, type: null, orderId: null });
   const [reason, setReason] = useState('');
+
+  // ====== Drawer state ======
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
+  const openSheet = (o: Order) => {
+    setSelectedOrder(o);
+    setSheetOpen(true);
+  };
 
   // Mutations
   const approveMut = useMutation({
@@ -484,7 +505,11 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
         transition={{ duration: 0.2 }}
         className={`group p-3 sm:p-4 rounded-2xl border bg-card/80 backdrop-blur supports-[backdrop-filter]:bg-card/60 shadow-sm hover:shadow-md transition-all ${selected ? 'ring-2 ring-primary/60' : ''}`}
       >
-        <div className="grid grid-cols-[56px_1fr_auto] items-start gap-3 sm:gap-4">
+        <button
+          type="button"
+          onClick={() => openSheet(order)}
+          className="grid grid-cols-[56px_1fr_auto] items-start gap-3 sm:gap-4 w-full text-left"
+        >
           <div className="flex items-center justify-center h-full pt-1 opacity-90">
             <TransferStatusAnimator status={order.status} />
           </div>
@@ -519,22 +544,27 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
               <Clock3 className="h-3 w-3" />
               {format(created, 'dd MMM, HH:mm')} ({formatDistanceToNow(created, { addSuffix: true })})
             </div>
-            <div className="mt-3">
-              <Button
-                variant="ghost"
-                size="sm"
-                className="px-2 py-1 h-auto text-xs transition-transform active:scale-95"
-                onClick={() => toggleExpanded(order.id!)}
-              >
-                <ChevronDown className={`mr-1 h-4 w-4 transition-transform ${isOpen ? 'rotate-180' : ''}`} />
-                {isOpen ? 'Hide Details' : 'View Items'}
-              </Button>
-            </div>
           </div>
           <div className="shrink-0 pt-1 flex justify-end">
-            <ActionBar order={order} role={role} />
+            {/* keep action preview small; full actions in sheet */}
+            <ChevronDown className="h-4 w-4 opacity-60 group-hover:opacity-100 transition" />
           </div>
+        </button>
+
+        {/* (optional) คงปุ่ม View Items เดิมไว้ก็ได้ */}
+        <div className="mt-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            className="px-2 py-1 h-auto text-xs transition-transform active:scale-95"
+            onClick={() => openSheet(order)}
+          >
+            <ChevronDown className={`mr-1 h-4 w-4`} />
+            View Details
+          </Button>
         </div>
+
+        {/* legacy inline expand (ซ่อนไว้ แต่ยังเผื่อใช้ได้) */}
         <AnimatePresence initial={false}>
           {isOpen && (
             <motion.div
@@ -803,6 +833,103 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
             </AlertDialogFooter>
           </AlertDialogContent>
         </AlertDialog>
+
+        {/* ===== Drawer: Order Details ===== */}
+        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+          <SheetContent className="w-full sm:max-w-xl overflow-y-auto">
+            <SheetHeader>
+              <SheetTitle className="flex items-center gap-2">
+                <Info className="h-5 w-5" />
+                Order Details
+              </SheetTitle>
+              <SheetDescription>
+                View transfer information, items and take actions.
+              </SheetDescription>
+            </SheetHeader>
+
+            {selectedOrder ? (
+              <div className="mt-4 space-y-4">
+                {/* Top meta */}
+                <div className="rounded-xl border p-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-semibold">
+                      #{selectedOrder.id?.slice?.(0, 8) ?? selectedOrder.id}
+                    </div>
+                    <StatusBadge status={selectedOrder.status} />
+                  </div>
+                  <div className="mt-2 grid grid-cols-1 gap-2 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4" />
+                      <span>
+                        Created:{' '}
+                        {format(
+                          (selectedOrder.createdAt?.toDate?.() as Date) ?? new Date(),
+                          'dd MMM yyyy, HH:mm'
+                        )}{' '}
+                        (
+                        {formatDistanceToNow(
+                          (selectedOrder.createdAt?.toDate?.() as Date) ?? new Date(),
+                          { addSuffix: true }
+                        )}
+                        )
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Factory className="h-4 w-4" />
+                      <span>{selectedOrder.buyerBranchName} → {selectedOrder.sellerBranchName}</span>
+                    </div>
+                    {(selectedOrder as any).requestedBy && (
+                      <div className="flex items-center gap-2">
+                        <User className="h-4 w-4" />
+                        <span>Requested by {(selectedOrder as any).requestedBy}</span>
+                      </div>
+                    )}
+                  </div>
+                  <ProgressRail status={selectedOrder.status} />
+                </div>
+
+                {/* Items */}
+                <ItemsBlock order={selectedOrder} />
+
+                {/* Reasons (reject/cancel) */}
+                {(selectedOrder as any).rejectReason && (
+                  <div className="rounded-lg border p-3 bg-red-50/60 text-red-700">
+                    <div className="text-xs font-semibold mb-1">Reject Reason</div>
+                    <div className="text-sm">{(selectedOrder as any).rejectReason}</div>
+                  </div>
+                )}
+                {selectedOrder.cancelReason && (
+                  <div className="rounded-lg border p-3 bg-amber-50/60 text-amber-700">
+                    <div className="text-xs font-semibold mb-1">Cancel Reason</div>
+                    <div className="text-sm">{selectedOrder.cancelReason}</div>
+                  </div>
+                )}
+
+                {/* Actions */}
+                <div className="rounded-xl border p-3">
+                  <div className="text-sm font-medium mb-2">Actions</div>
+                  <div className="flex flex-wrap gap-2">
+                    {/* reuse ActionBar with role autodetect (if myBranchId === buyer?) */}
+                    <ActionBar
+                      order={selectedOrder}
+                      role={
+                        selectedOrder.buyerBranchId === myBranchId ? 'buyer' : 'seller'
+                      }
+                    />
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-6 text-sm text-muted-foreground">No order selected.</div>
+            )}
+
+            <SheetFooter className="mt-6">
+              <SheetClose asChild>
+                <Button type="button" variant="outline">Close</Button>
+              </SheetClose>
+            </SheetFooter>
+          </SheetContent>
+        </Sheet>
       </div>
     </TooltipProvider>
   );
