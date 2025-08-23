@@ -1,16 +1,27 @@
+/* ==========================================================================
+   Tailwind v4 base + plugins
+   ========================================================================== */
 @import "tailwindcss";
-@import "tw-animate-css";
+@plugin "tailwindcss-animate";
 
-/* ===== Dark variant support ===== */
-@custom-variant dark (&:is(.dark *));
+/* ==========================================================================
+   Variants (Tailwind v4)
+   - ใช้กับโหมดมืดที่ .dark (ทั้งที่ root และ nested)
+   ========================================================================== */
+@custom-variant dark (&:where(.dark, .dark *));
 
-/* ===== Theme mapping (Tailwind v4 @theme) ===== */
+/* ==========================================================================
+   Theme mapping (Tailwind v4 @theme)
+   - map ตัวแปรพื้นฐานของ shadcn/ui -> ตัวแปรสีที่ Tailwind เข้าใจ
+   ========================================================================== */
 @theme inline {
+  /* Radius scale (derived) */
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
 
+  /* Base semantic colors */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -30,12 +41,14 @@
   --color-input: var(--input);
   --color-ring: var(--ring);
 
+  /* Charts */
   --color-chart-1: var(--chart-1);
   --color-chart-2: var(--chart-2);
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
 
+  /* Sidebar (shadcn/ui sidebar) */
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -46,34 +59,47 @@
   --color-sidebar-ring: var(--sidebar-ring);
 }
 
-/* ===== Light mode palette (OKLCH) ===== */
+/* ==========================================================================
+   Light palette (OKLCH)
+   ========================================================================== */
 :root {
   --radius: 0.75rem;
+
   --background: oklch(0.99 0.002 264);
   --foreground: oklch(0.09 0.005 264);
+
   --card: oklch(1 0.001 264);
   --card-foreground: oklch(0.09 0.005 264);
+
   --popover: oklch(1 0.001 264);
   --popover-foreground: oklch(0.09 0.005 264);
+
   --primary: oklch(0.47 0.13 264);
   --primary-foreground: oklch(0.98 0.002 264);
+
   --secondary: oklch(0.96 0.006 264);
   --secondary-foreground: oklch(0.47 0.13 264);
+
   --muted: oklch(0.96 0.006 264);
   --muted-foreground: oklch(0.45 0.006 264);
+
   --accent: oklch(0.96 0.006 264);
   --accent-foreground: oklch(0.47 0.13 264);
+
   --destructive: oklch(0.577 0.245 27.325);
+
   --border: oklch(0.9 0.006 264);
   --input: oklch(0.94 0.006 264);
   --ring: oklch(0.47 0.13 264);
 
+  /* Charts */
   --chart-1: oklch(0.646 0.222 41.116);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
 
+  /* Sidebar */
   --sidebar: oklch(0.98 0.002 264);
   --sidebar-foreground: oklch(0.09 0.005 264);
   --sidebar-primary: oklch(0.47 0.13 264);
@@ -84,33 +110,45 @@
   --sidebar-ring: oklch(0.47 0.13 264);
 }
 
-/* ===== Dark mode palette ===== */
+/* ==========================================================================
+   Dark palette
+   ========================================================================== */
 .dark {
   --background: oklch(0.145 0 0);
   --foreground: oklch(0.985 0 0);
+
   --card: oklch(0.205 0 0);
   --card-foreground: oklch(0.985 0 0);
+
   --popover: oklch(0.205 0 0);
   --popover-foreground: oklch(0.985 0 0);
+
   --primary: oklch(0.922 0 0);
   --primary-foreground: oklch(0.205 0 0);
+
   --secondary: oklch(0.269 0 0);
   --secondary-foreground: oklch(0.985 0 0);
+
   --muted: oklch(0.269 0 0);
   --muted-foreground: oklch(0.708 0 0);
+
   --accent: oklch(0.269 0 0);
   --accent-foreground: oklch(0.985 0 0);
+
   --destructive: oklch(0.704 0.191 22.216);
+
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
 
+  /* Charts */
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
   --chart-4: oklch(0.627 0.265 303.9);
   --chart-5: oklch(0.645 0.246 16.439);
 
+  /* Sidebar */
   --sidebar: oklch(0.205 0 0);
   --sidebar-foreground: oklch(0.985 0 0);
   --sidebar-primary: oklch(0.488 0.243 264.376);
@@ -121,7 +159,9 @@
   --sidebar-ring: oklch(0.556 0 0);
 }
 
-/* ===== Base layer ===== */
+/* ==========================================================================
+   Base layer
+   ========================================================================== */
 @layer base {
   * {
     @apply border-border outline-ring/50;
@@ -149,12 +189,20 @@
     border: 1px solid color-mix(in oklab, var(--border) 50%, transparent);
   }
 
-  /* Gradient utilities */
+  /* Gradients */
   .gradient-primary {
-    background: linear-gradient(135deg, var(--primary) 0%, color-mix(in oklab, var(--primary) 80%, transparent) 100%);
+    background: linear-gradient(
+      135deg,
+      var(--primary) 0%,
+      color-mix(in oklab, var(--primary) 80%, transparent) 100%
+    );
   }
   .gradient-card {
-    background: linear-gradient(135deg, var(--card) 0%, color-mix(in oklab, var(--muted) 30%, transparent) 100%);
+    background: linear-gradient(
+      135deg,
+      var(--card) 0%,
+      color-mix(in oklab, var(--muted) 30%, transparent) 100%
+    );
   }
 
   /* Hover lift */
@@ -171,7 +219,9 @@
   .status-info    { @apply bg-blue-50 text-blue-700 border-blue-200; }
 }
 
-/* ===== Full-width rules for App Shell ===== */
+/* ==========================================================================
+   App Shell – full width rules
+   ========================================================================== */
 :root, html, body { width: 100%; height: 100%; }
 #app-root, #app-shell, #app-content { width: 100%; min-height: 100dvh; }
 
@@ -204,14 +254,14 @@
   margin-inline: calc(50% - 50vw);
 }
 
-/* ==== Transition only on interactive elements ==== */
+/* Transition only on interactive elements */
 button, a, [role="button"], .hover-lift, .focus-ring {
   transition-property: color, background-color, border-color, opacity, box-shadow, transform, filter;
   transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
   transition-duration: 150ms;
 }
 
-/* Force full width for all screens */
+/* Force full width for all screens inside app-content */
 #app-root #app-content .max-w-screen-xl,
 #app-root #app-content .max-w-screen-lg,
 #app-root #app-content .max-w-screen-md,
@@ -223,31 +273,63 @@ button, a, [role="button"], .hover-lift, .focus-ring {
   padding-left: 0 !important;
   padding-right: 0 !important;
 }
-/* === Sidebar collapse behavior (shadcn/ui compatible) === */
-/* ให้ wrapper ของ sidebar ไม่ปล่อยเนื้อหาล้นตอนหุบ */
+
+/* ==========================================================================
+   Sidebar helpers (shadcn/ui compatible)
+   - อย่าลืมใส่ id="app-sidebar" ที่คอมโพเนนต์ Sidebar
+   ========================================================================== */
+
+/* prevent overflow when collapsed */
 #app-sidebar { overflow: hidden; }
 
-/* กำหนดความกว้างชัดเจนตาม data-state ที่ shadcn/ui ใส่มาให้ */
+/* explicit widths */
 #app-sidebar [data-state="expanded"]  { width: 280px !important; }
 #app-sidebar [data-state="collapsed"] { width: 56px  !important; }
 
-/* ป้องกัน label/ข้อความภายในดันความกว้างตอน collapsed */
+/* hide labels/text when collapsed */
 #app-sidebar [data-state="collapsed"] .sidebar-label,
 #app-sidebar [data-state="collapsed"] .sidebar-text,
 #app-sidebar [data-state="collapsed"] .sidebar-title {
   display: none !important;
 }
 
-/* กันรายการ tile กลายเป็นหลายบรรทัดตอน collapsed */
+/* keep items on one line (no wrapping) */
 #app-sidebar [data-state="collapsed"] .sidebar-item {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* ปุ่ม/โลโก้ด้านบนให้พับในแนวตั้ง */
+/* header compact when collapsed */
 #app-sidebar [data-state="collapsed"] .sidebar-header {
   padding-left: 0 !important;
   padding-right: 0 !important;
   justify-content: center;
+}
+
+/* ==========================================================================
+   App area (outside of sidebar)
+   ========================================================================== */
+:root { --app-padding: clamp(16px, 2vw, 24px); }
+
+.app-shell { min-height: 100dvh; width: 100dvw; }
+
+.app-main {
+  width: 100%;
+  min-height: 100dvh;
+  padding: var(--app-padding);
+}
+
+/* remove width limits in pages/components accidentally set */
+.app-main .container,
+.app-main [class*="max-w-"],
+.app-main .mx-auto {
+  max-width: 100% !important;
+  margin-left: 0 !important;
+  margin-right: 0 !important;
+}
+
+/* tables/cards should not overflow */
+.app-main table {
+  width: 100%;
 }

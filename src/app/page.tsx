@@ -1,286 +1,213 @@
-// src/app/page.tsx - Full width, no implicit max-width anywhere (final)
 'use client';
 
 import * as React from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
-import { useBranch } from '@/contexts/BranchContext';
-import { FirebaseTest } from '@/src/app/components/FirebaseTest';
+import Link from 'next/link';
+import { motion } from 'framer-motion';
 
-// views
-import MyInventory from '@/src/app/components/MyInventory';
-import TransferPlatformView from '@/src/app/components/TransferPlatformView';
-import TransferRequestsView from '@/src/app/components/TransferRequestsView';
-
-// UI helpers
+// shadcn/ui
+import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
 
-// ใช้ type เดียวกับ /types/nav.ts
-import type { ViewKey } from '@/types/nav';
+// icons
+import {
+  Timer,
+  ArrowLeftRight,
+  BarChart3,
+  Shield,
+  ArrowRight,
+} from 'lucide-react';
 
-function isViewKey(v: string | null): v is ViewKey {
-  return !!v && [
-    'inventory','transfer_platform','transfer_requests',
-    'dashboard','network','analytics','debug'
-  ].includes(v);
+/** ====== QUICK PATHS (แก้ตรงนี้ให้ตรงกับโปรเจกต์คุณ) ====== */
+const PATHS = {
+  login: '/login',
+  register: '/join',
+};
+
+/** ====== Mini Feature Cards ====== */
+type Feature = {
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  title: string;
+  desc: string;
+  chips?: string[];
+};
+
+const FEATURES: Feature[] = [
+  {
+    icon: Timer,
+    title: 'ติดตั้งเร็ว ใช้ได้ทันที',
+    desc: 'เชื่อม Firebase/Firestore แล้วพร้อมใช้งานภายในไม่กี่นาที ไม่ต้องลงโปรแกรม',
+    chips: ['ไม่ต้องลงเครื่อง', 'รองรับมือถือ'],
+  },
+  {
+    icon: ArrowLeftRight,
+    title: 'แชร์สต็อกข้ามสาขา',
+    desc: 'เห็นสต็อกและโอนระหว่างสาขาแบบเรียลไทม์ พร้อมสถานะติดตามครบ',
+    chips: ['Track status', 'แจ้งเตือนอัตโนมัติ'],
+  },
+  {
+    icon: BarChart3,
+    title: 'ลดของค้าง เพิ่มยอดขาย',
+    desc: 'กระจายของไปสาขาที่มีดีมานด์สูงขึ้น Fill rate ดีขึ้น Dead stock ลดลง',
+    chips: ['Fill rate ↑', 'Dead stock ↓'],
+  },
+  {
+    icon: Shield,
+    title: 'ปลอดภัย มาตรฐานองค์กร',
+    desc: 'สิทธิ์ตามบทบาท (RBAC) + Audit log ครบ ตรวจสอบย้อนหลังได้',
+    chips: ['RBAC', 'Audit log'],
+  },
+];
+
+const container = {
+  hidden: { opacity: 0, y: 6 },
+  show: { opacity: 1, y: 0, transition: { staggerChildren: 0.06, duration: 0.25 } },
+};
+
+const item = {
+  hidden: { opacity: 0, y: 6, scale: 0.99 },
+  show: { opacity: 1, y: 0, scale: 1, transition: { duration: 0.25 } },
+};
+
+function FeatureHighlights() {
+  return (
+    <motion.div
+      variants={container}
+      initial="hidden"
+      whileInView="show"
+      viewport={{ once: true, amount: 0.25 }}
+      className="mx-auto mt-10 grid w-full max-w-6xl grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4"
+    >
+      {FEATURES.map((f) => {
+        const Icon = f.icon;
+        return (
+          <motion.div key={f.title} variants={item}>
+            <Card className="group h-full overflow-hidden border-border/60 bg-card/80 shadow-sm transition-colors">
+              <CardHeader className="pb-2">
+                <div className="flex items-center gap-2">
+                  <div className="rounded-lg border border-border/60 bg-background p-2">
+                    <Icon className="h-4 w-4 text-primary" />
+                  </div>
+                  <CardTitle className="text-base">{f.title}</CardTitle>
+                </div>
+              </CardHeader>
+              <CardContent className="pt-0">
+                <p className="min-h-[56px] text-sm text-muted-foreground">{f.desc}</p>
+                {f.chips?.length ? (
+                  <div className="mt-3 flex flex-wrap gap-2">
+                    {f.chips.map((c) => (
+                      <Badge
+                        key={c}
+                        variant="secondary"
+                        className="bg-secondary/70 text-[11px]"
+                      >
+                        {c}
+                      </Badge>
+                    ))}
+                  </div>
+                ) : null}
+                <motion.div
+                  className="pointer-events-none mt-4 h-1 rounded-full bg-gradient-to-r from-primary/40 via-primary/20 to-primary/40 opacity-0"
+                  initial={false}
+                  whileHover={{ opacity: 1 }}
+                  transition={{ duration: 0.2 }}
+                />
+              </CardContent>
+            </Card>
+          </motion.div>
+        );
+      })}
+    </motion.div>
+  );
 }
 
+/** ====== Landing Page ====== */
 export default function Page() {
-  const search = useSearchParams();
-  const router = useRouter();
-  const { selectedBranch, selectedBranchId, branches, loading, error } = useBranch();
-
-  const view: ViewKey = isViewKey(search?.get('view'))
-    ? (search!.get('view') as ViewKey)
-    : 'inventory';
-
-  const myBranchId = selectedBranchId || '';
-  const myBranchName = selectedBranch?.branchName || selectedBranchId || 'My Branch';
-
-  // Wrapper กลาง: บังคับเต็มจอ + กันโอเวอร์โฟลว์แนวนอน
-  const Wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-    <div className="w-full min-h-dvh overflow-x-hidden">
-      <div className="w-full max-w-none p-6">
-        {children}
-      </div>
-    </div>
-  );
-
-  const handleNavigate = React.useCallback((targetView: ViewKey) => {
-    router.push(`/?view=${targetView}`);
-  }, [router]);
-
-  // Debug view
-  if (view === 'debug') {
-    return (
-      <Wrapper>
-        <h1 className="text-2xl font-bold">🐛 Debug Information</h1>
-
-        <FirebaseTest />
-
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>Branch Context Status</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-2">
-            <div>
-              <Badge variant={loading ? 'secondary' : 'default'}>
-                Loading: {loading.toString()}
-              </Badge>
-            </div>
-            <div>
-              <Badge variant={error ? 'destructive' : 'default'}>
-                Error: {error ? String(error) : 'None'}
-              </Badge>
-            </div>
-            <div><strong>Selected Branch ID:</strong> {selectedBranchId || 'None'}</div>
-            <div><strong>Selected Branch Name:</strong> {selectedBranch?.branchName || 'None'}</div>
-            <div><strong>Total Branches:</strong> {branches?.length ?? 0}</div>
-
-            {!!(branches?.length) && (
-              <div>
-                <strong>Available Branches:</strong>
-                <ul className="mt-1 space-y-1">
-                  {branches!.map((b) => (
-                    <li key={b.id} className="text-sm bg-gray-100 p-1 rounded">
-                      <strong>{b.id}:</strong> {b.branchName}
-                      {b.isActive ? (
-                        <Badge className="ml-2" variant="default">Active</Badge>
-                      ) : (
-                        <Badge className="ml-2" variant="secondary">Inactive</Badge>
-                      )}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>Environment Variables</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="space-y-1 text-sm font-mono">
-              <div>API Key: {process.env.NEXT_PUBLIC_FB_API_KEY ? '✅ Set' : '❌ Missing'}</div>
-              <div>Auth Domain: {process.env.NEXT_PUBLIC_FB_AUTH_DOMAIN ? '✅ Set' : '❌ Missing'}</div>
-              <div>Project ID: {process.env.NEXT_PUBLIC_FB_PROJECT_ID || '❌ Missing'}</div>
-              <div>Storage Bucket: {process.env.NEXT_PUBLIC_FB_STORAGE_BUCKET ? '✅ Set' : '❌ Missing'}</div>
-              <div>Messaging Sender ID: {process.env.NEXT_PUBLIC_FB_MESSAGING_SENDER_ID ? '✅ Set' : '❌ Missing'}</div>
-              <div>App ID: {process.env.NEXT_PUBLIC_FB_APP_ID ? '✅ Set' : '❌ Missing'}</div>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Button onClick={() => handleNavigate('inventory')}>Back to Inventory</Button>
-      </Wrapper>
-    );
-  }
-
-  // Error
-  if (error) {
-    return (
-      <Wrapper>
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle className="text-red-600">❌ Database Connection Error</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-red-600">{String(error)}</p>
-            <div className="space-y-2">
-              <p><strong>Possible solutions:</strong></p>
-              <ul className="list-disc pl-5 space-y-1">
-                <li>Check your Firebase configuration in <code>.env.local</code></li>
-                <li>Verify your Firebase project settings</li>
-                <li>Check Firestore security rules</li>
-                <li>Ensure you have internet connection</li>
-              </ul>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => window.location.reload()}>🔄 Reload Page</Button>
-              <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Open Debug View</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </Wrapper>
-    );
-  }
-
-  // Loading
-  if (loading) {
-    return (
-      <Wrapper>
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>⏳ Loading...</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <p>Connecting to database and loading branch information...</p>
-            <div className="mt-4">
-              <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Debug Info</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </Wrapper>
-    );
-  }
-
-  // ไม่มีสาขา
-  if (!myBranchId) {
-    return (
-      <Wrapper>
-        <Card className="w-full">
-          <CardHeader>
-            <CardTitle>🏪 Select a branch to get started</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p>เลือกสาขาจากเมนูด้านซ้ายบน (BranchSelect) แล้วหน้านี้จะโหลดข้อมูลให้โดยอัตโนมัติ</p>
-
-            {(branches?.length ?? 0) === 0 && (
-              <div className="space-y-2">
-                <p className="text-amber-600"><strong>⚠️ No branches found in database</strong></p>
-                <p>You may need to:</p>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>Add some branch data to your Firestore 'stores' collection</li>
-                  <li>Check your Firestore security rules</li>
-                  <li>Verify your Firebase configuration</li>
-                </ul>
-              </div>
-            )}
-
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Debug Info</Button>
-              <Button onClick={() => window.location.reload()}>🔄 Reload</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </Wrapper>
-    );
-  }
-
-  // ปกติ
   return (
-    <Wrapper>
-      {(() => {
-        switch (view) {
-          case 'inventory':
-            return (
-              <MyInventory
-                myBranchId={myBranchId}
-                myBranchName={myBranchName}
-                onNavigate={handleNavigate}
-              />
-            );
-          case 'transfer_platform':
-            return (
-              <TransferPlatformView
-                myBranchId={myBranchId}
-                myBranchName={myBranchName}
-              />
-            );
-          case 'transfer_requests':
-            return (
-              <TransferRequestsView
-                myBranchId={myBranchId}
-                myBranchName=""
-              />
-            );
-          case 'dashboard':
-          case 'analytics':
-            return (
-              <Card className="w-full">
-                <CardHeader>
-                  <CardTitle>Analytics Dashboard (placeholder)</CardTitle>
-                </CardHeader>
-                <CardContent>ใส่กราฟหรือ KPI รวมที่ต้องการในภายหลังได้ที่นี่</CardContent>
-              </Card>
-            );
-          case 'network':
-            return (
-              <Card className="w-full">
-                <CardHeader>
-                  <CardTitle>Branches (placeholder)</CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <p>หน้านี้สำหรับจัดการ/ดูรายการสาขา</p>
+    <div
+      className="min-h-screen bg-background text-foreground"
+      style={{
+        // พื้นหลังไล่เฉดนุ่ม ๆ (ไม่ใช้รูป)
+        backgroundImage:
+          'radial-gradient(1200px 600px at 50% -10%, color-mix(in oklab, var(--primary) 6%, transparent), transparent), radial-gradient(900px 500px at 90% 0%, color-mix(in oklab, var(--primary) 4%, transparent), transparent)',
+      }}
+    >
+      {/* Top Nav */}
+      <header className="sticky top-0 z-30 w-full border-b bg-background/70 backdrop-blur supports-[backdrop-filter]:bg-background/60">
+        <div className="mx-auto flex h-14 w-full max-w-7xl items-center justify-between px-4">
+          <div className="text-sm font-semibold tracking-tight">Tire Network</div>
+          <nav className="flex items-center gap-2">
+            <Button asChild variant="ghost" size="sm" className="hidden sm:inline-flex">
+              <Link href={PATHS.login}>เข้าสู่ระบบ</Link>
+            </Button>
+            <Button asChild size="sm" className="shadow-sm">
+              <Link href={PATHS.register}>ลงทะเบียนเข้าร่วม</Link>
+            </Button>
+          </nav>
+        </div>
+      </header>
 
-                  <div className="space-y-2">
-                    <p><strong>Available Branches:</strong></p>
-                    <div className="grid gap-2">
-                      {(branches ?? []).map((branch) => (
-                        <div key={branch.id} className="border rounded p-3">
-                          <div className="font-semibold">{branch.branchName}</div>
-                          <div className="text-sm text-muted-foreground">ID: {branch.id}</div>
-                          <div className="text-sm">
-                            {branch.isActive ? (
-                              <Badge variant="default">Active</Badge>
-                            ) : (
-                              <Badge variant="secondary">Inactive</Badge>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+      {/* Hero */}
+      <main className="relative mx-auto w-full max-w-7xl px-4 pb-20 pt-16 sm:pt-24">
+        <section className="text-center">
+          <motion.h1
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35 }}
+            className="mx-auto max-w-4xl text-4xl font-extrabold leading-[1.1] tracking-tight sm:text-5xl lg:text-6xl"
+          >
+            เชื่อมต่อทุกสาขา <br className="hidden sm:block" />
+            <span className="text-muted-foreground">ในที่เดียว</span>
+          </motion.h1>
 
-                  <Button onClick={() => router.push('/branches/new')}>
-                    + Add New Branch
-                  </Button>
-                </CardContent>
-              </Card>
-            );
-          default:
-            return (
-              <MyInventory
-                myBranchId={myBranchId}
-                myBranchName={myBranchName}
-                onNavigate={handleNavigate}
-              />
-            );
-        }
-      })()}
-    </Wrapper>
+          <motion.p
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.05 }}
+            className="mx-auto mt-4 max-w-2xl text-balance text-muted-foreground sm:text-lg"
+          >
+            แพลตฟอร์มโอนย้ายสต็อกข้ามสาขาแบบเรียลไทม์ — ใช้งานง่าย ปลอดภัย และขยายได้
+          </motion.p>
+
+          <motion.div
+            initial={{ opacity: 0, y: 8 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.35, delay: 0.1 }}
+            className="mt-6 flex items-center justify-center gap-3"
+          >
+            <Button asChild className="px-5">
+              <Link href={PATHS.register}>
+                ลงทะเบียนเข้าร่วม
+                <ArrowRight className="ml-2 h-4 w-4" />
+              </Link>
+            </Button>
+            <Button asChild variant="outline" className="px-5">
+              <Link href={PATHS.login}>เข้าสู่ระบบ</Link>
+            </Button>
+          </motion.div>
+        </section>
+
+        {/* Feature mini-cards */}
+        <FeatureHighlights />
+
+        {/* bottom bullets (optional) */}
+        <div className="mx-auto mt-8 grid max-w-6xl grid-cols-1 gap-3 md:grid-cols-3">
+          <div className="rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground">
+            ✅ ตั้งค่าเร็ว ไม่ต้องลงเครื่อง
+          </div>
+          <div className="rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground">
+            ✅ รองรับหลายสาขาและสิทธิ์การใช้งาน
+          </div>
+          <div className="rounded-xl border bg-card px-4 py-3 text-sm text-muted-foreground">
+            ✅ ข้อมูลปลอดภัย มาตรฐานองค์กร
+          </div>
+        </div>
+      </main>
+
+      {/* Footer */}
+      <footer className="border-t py-8 text-center text-xs text-muted-foreground">
+        © {new Date().getFullYear()} Tire Network — All rights reserved.
+      </footer>
+    </div>
   );
 }
