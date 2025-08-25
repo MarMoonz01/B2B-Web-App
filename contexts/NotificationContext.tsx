@@ -1,13 +1,6 @@
-// contexts/NotificationContext.tsx
 'use client';
 
-import React, {
-  createContext,
-  useContext,
-  useEffect,
-  useState,
-  useCallback,
-} from 'react';
+import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
 import { db } from '@/lib/firebase';
 import {
   collection,
@@ -17,20 +10,19 @@ import {
   doc,
   updateDoc,
   orderBy,
-  limit,
-  writeBatch,
+  writeBatch, // ✅ FIX: import writeBatch
 } from 'firebase/firestore';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { useBranch } from '@/contexts/BranchContext';
+import { useBranch } from './BranchContext';
 import type { Notification } from '@/lib/services/InventoryService';
 
 type NotificationContextType = {
   notifications: Notification[];
   unreadCount: number;
   loading: boolean;
-  ready: boolean;               // ล็อกอิน + มี branch แล้วหรือยัง
-  markAsRead: (id: string) => Promise<void>;
-  markAllAsRead: () => Promise<void>;
+  /** true เมื่อมี branch แล้วและโหลดเสร็จ */
+  ready: boolean; // ✅ มีตัวแปรนี้จริง
+  markAsRead: (id: string) => void;
+  markAllAsRead: () => void;
 };
 
 const NotificationContext = createContext<NotificationContextType | null>(null);
@@ -39,87 +31,96 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const { selectedBranchId } = useBranch();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
-  const [authed, setAuthed] = useState(false);
 
-  // ติดตามสถานะล็อกอิน
   useEffect(() => {
-    const auth = getAuth();
-    const off = onAuthStateChanged(auth, (u) => setAuthed(!!u));
-    return () => off();
-  }, []);
-
-  // subscribe เฉพาะเมื่อ authed + มี branch
-  useEffect(() => {
-    if (!authed || !selectedBranchId) {
+    // ไม่มี branch → clear แล้วไม่ subscribe
+    if (!selectedBranchId) {
       setNotifications([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
-    const qref = query(
+    const q = query(
       collection(db, 'notifications'),
       where('branchId', '==', selectedBranchId),
-      orderBy('createdAt', 'desc'),
-      limit(100)
+      orderBy('createdAt', 'desc')
     );
 
     const unsubscribe = onSnapshot(
-      qref,
+      q,
       (snapshot) => {
-        const rows = snapshot.docs.map(
-          (d) => ({ id: d.id, ...(d.data() as any) }) as Notification
-        );
-        setNotifications(rows);
+        const notifs = snapshot.docs.map((d) => ({ id: d.id, ...(d.data() as any) } as Notification));
+        setNotifications(notifs);
         setLoading(false);
       },
       (error) => {
         console.error('Error fetching notifications:', error);
-        setNotifications([]);
         setLoading(false);
       }
     );
 
     return () => unsubscribe();
-  }, [authed, selectedBranchId]);
+  }, [selectedBranchId]);
 
-  const unreadCount = notifications.reduce((n, x) => n + (!x.isRead ? 1 : 0), 0);
-  const ready = authed && !!selectedBranchId;
+  // ✅ FIX: มีตัวแปร unreadCount จริง
+  const unreadCount = useMemo(
+    () => notifications.filter((n) => !n.isRead).length,
+    [notifications]
+  );
 
-  const markAsRead = useCallback(async (id: string) => {
-    if (!id) return;
-    const n = notifications.find((x) => x.id === id);
-    if (!n || n.isRead) return;
-    try {
-      await updateDoc(doc(db, 'notifications', id), { isRead: true });
-    } catch (error) {
-      console.error(`Failed to mark notification ${id} as read:`, error);
-    }
-  }, [notifications]);
+  // state พร้อมใช้งาน (มี branch และโหลดเสร็จ)
+  const ready = !!selectedBranchId && !loading;
+
+  const markAsRead = useCallback(
+    async (id: string) => {
+      if (!id) return;
+      const notif = notifications.find((n) => n.id === id);
+      if (!notif || notif.isRead) return;
+
+      try {
+        const ref = doc(db, 'notifications', id);
+        await updateDoc(ref, { isRead: true });
+      } catch (err) {
+        console.error(`Failed to mark notification ${id} as read:`, err);
+      }
+    },
+    [notifications]
+  );
 
   const markAllAsRead = useCallback(async () => {
     const unread = notifications.filter((n) => !n.isRead && n.id);
     if (unread.length === 0) return;
+
     try {
+      // ✅ FIX: ใช้ writeBatch จริง
       const batch = writeBatch(db);
-      unread.forEach((n) => batch.update(doc(db, 'notifications', n.id!), { isRead: true }));
+      unread.forEach((n) => {
+        const ref = doc(db, 'notifications', n.id!);
+        batch.update(ref, { isRead: true });
+      });
       await batch.commit();
-    } catch (error) {
-      console.error('Failed to mark all as read:', error);
+    } catch (err) {
+      console.error('Failed to mark all as read:', err);
     }
   }, [notifications]);
 
-  return (
-    <NotificationContext.Provider
-      value={{ notifications, unreadCount, loading, ready, markAsRead, markAllAsRead }}
-    >
-      {children}
-    </NotificationContext.Provider>
-  );
+  const value: NotificationContextType = {
+    notifications,
+    unreadCount, // ✅ มีใน scope แล้ว
+    loading,
+    ready,       // ✅ มีใน scope แล้ว
+    markAsRead,
+    markAllAsRead,
+  };
+
+  return <NotificationContext.Provider value={value}>{children}</NotificationContext.Provider>;
 }
 
 export function useNotifications() {
   const ctx = useContext(NotificationContext);
-  if (!ctx) throw new Error('useNotifications must be used within a NotificationProvider');
+  if (!ctx) {
+    throw new Error('useNotifications must be used within a NotificationProvider');
+  }
   return ctx;
 }

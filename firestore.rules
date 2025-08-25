@@ -2,14 +2,15 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{db}/documents {
 
-    function signedIn() { return request.auth != null; }
+    function signedIn() {
+      return request.auth != null;
+    }
 
-    // uid_branchId_ROLE
+    // This function requires Document ID to be in uid_branchId_ROLE format
     function hasRoleIn(branchId) {
       return signedIn() && (
         exists(/databases/$(db)/documents/userBranchRoles/$(request.auth.uid + "_" + branchId + "_ADMIN")) ||
-        exists(/databases/$(db)/documents/userBranchRoles/$(request.auth.uid + "_" + branchId + "_STAFF")) ||
-        exists(/databases/$(db)/documents/userBranchRoles/$(request.auth.uid + "_" + branchId + "_VIEWER"))
+        exists(/databases/$(db)/documents/userBranchRoles/$(request.auth.uid + "_" + branchId + "_SALES"))
       );
     }
 
@@ -18,25 +19,22 @@ service cloud.firestore {
       allow read, write: if signedIn() && uid == request.auth.uid;
     }
 
-    // userBranchRoles: เจ้าของอ่านได้
+    // This rule allows the app to query for roles upon login
     match /userBranchRoles/{docId} {
-      allow read: if signedIn() && resource.data.uid == request.auth.uid;
+      allow get: if signedIn() && resource.data.uid == request.auth.uid;
+      allow list: if signedIn() && request.query.where.uid == request.auth.uid;
       allow create, update, delete: if false;
     }
 
-    // stores + inventory ทั้งลึกสุด
+    // Other rules...
     match /stores/{storeId} {
       allow read, write: if hasRoleIn(storeId);
-
       match /inventory/{brandId} {
         allow read, write: if hasRoleIn(storeId);
-
         match /models/{modelId} {
           allow read, write: if hasRoleIn(storeId);
-
           match /variants/{variantId} {
             allow read, write: if hasRoleIn(storeId);
-
             match /dots/{dotCode} {
               allow read, write: if hasRoleIn(storeId);
             }
@@ -44,30 +42,22 @@ service cloud.firestore {
         }
       }
     }
-
-    // orders
     match /orders/{orderId} {
       allow read: if signedIn() &&
         (hasRoleIn(resource.data.buyerBranchId) || hasRoleIn(resource.data.sellerBranchId));
-      // ผู้สร้างคือฝั่ง buyer
       allow create: if signedIn() && hasRoleIn(request.resource.data.buyerBranchId);
       allow update: if signedIn() &&
         (hasRoleIn(resource.data.buyerBranchId) || hasRoleIn(resource.data.sellerBranchId));
       allow delete: if false;
     }
-
-    // stockMovements
     match /stockMovements/{smId} {
       allow read:   if signedIn() && hasRoleIn(resource.data.branchId);
       allow create: if signedIn() && hasRoleIn(request.resource.data.branchId);
       allow update, delete: if false;
     }
-
-    // notifications
     match /notifications/{nId} {
       allow read:   if signedIn() && hasRoleIn(resource.data.branchId);
       allow create: if signedIn() && hasRoleIn(request.resource.data.branchId);
-      // ให้ mark as read ได้
       allow update: if signedIn() &&
         (hasRoleIn(resource.data.branchId) || hasRoleIn(request.resource.data.branchId));
       allow delete: if false;
