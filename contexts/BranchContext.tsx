@@ -1,111 +1,207 @@
-// contexts/BranchContext.tsx
 'use client';
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from 'react';
-import { db, auth } from '@/lib/firebase';
-import { collection, onSnapshot } from 'firebase/firestore';
-import { onAuthStateChanged } from 'firebase/auth';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useMemo,
+  useCallback,
+  useRef,
+  useState,
+  PropsWithChildren,
+} from 'react';
 
-export type Branch = { id: string; branchName: string; location?: string; isActive?: boolean; orgId?: string; };
+//
+// ===== Types =====
+//
+export type Branch = {
+  id: string;
+  branchName: string;
+  location?: string;
+  isActive: boolean;
+  orgId?: string;
+};
 
-type BranchContextType = {
+type BranchContextValue = {
   branches: Branch[];
-  loading: boolean;
-  error: string | null;
   selectedBranchId: string | null;
   selectedBranch: Branch | null;
   setSelectedBranchId: (id: string) => void;
-  activeBranchId: string | null;
-  activeBranchName: string;
-  setActiveBranch: (id: string, name?: string) => void;
-  refreshKey: number;
+  loading: boolean;
+  error: string | null;
+  refresh: () => Promise<void>;
 };
 
-const BranchContext = createContext<BranchContextType | null>(null);
-const LS_KEY = 'branchId';
+//
+// ===== Constants =====
+//
+const STORAGE_KEY = 'branchId';
 
-export function BranchProvider({ children }: { children: React.ReactNode }) {
-  const [uid, setUid] = useState<string | null>(null);
+//
+// ===== Context =====
+//
+const BranchContext = createContext<BranchContextValue | undefined>(undefined);
+
+//
+// ===== Provider =====
+//
+export function BranchProvider({ children }: PropsWithChildren<{}>) {
+  const mounted = useRef<boolean>(false);
+
   const [branches, setBranches] = useState<Branch[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [selectedBranchId, setSelectedBranchIdState] = useState<string | null>(null);
-  const [refreshKey, setRefreshKey] = useState(0);
+  const [loading, setLoading] = useState<boolean>(true);
+  const [error, setError] = useState<string | null>(null);
 
-  // wait for auth
+  // --- helpers ---
+  const pickInitialBranchId = useCallback(
+    (list: Branch[]): string | null => {
+      if (!list?.length) return null;
+
+      // 1) ลองดึงจาก localStorage
+      let saved: string | null = null;
+      if (typeof window !== 'undefined') {
+        try {
+          saved = localStorage.getItem(STORAGE_KEY);
+        } catch {
+          // ignore
+        }
+      }
+
+      const savedExists = saved && list.some((b) => b.id === saved);
+      if (saved && savedExists) return saved!;
+
+      // 2) เลือกอันแรกที่ active; ถ้าไม่มี เลือกตัวแรก
+      const firstActive = list.find((b) => b.isActive !== false);
+      return (firstActive?.id ?? list[0].id) || null;
+    },
+    []
+  );
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const r = await fetch('/api/branches/visible', { cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok || !d?.ok) {
+        throw new Error(d?.error || 'Failed to load branches');
+      }
+
+      const list: Branch[] = (d.branches as any[]).map((b) => ({
+        id: String(b.id),
+        branchName: b.branchName ?? String(b.id),
+        location: b.location,
+        isActive: b.isActive !== false,
+        orgId: b.orgId,
+      }));
+
+      setBranches(list);
+
+      // ถ้ายังไม่มี selection ให้เลือกตามกติกา
+      setSelectedBranchIdState((prev) => prev ?? pickInitialBranchId(list));
+    } catch (e: any) {
+      setError(e?.message || String(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [pickInitialBranchId]);
+
+  // --- mount: load once ---
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => setUid(user?.uid ?? null));
-    return () => unsub();
+    if (mounted.current) return;
+    mounted.current = true;
+    void load();
+  }, [load]);
+
+  // --- persist selection to localStorage ---
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    if (!selectedBranchId) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, selectedBranchId);
+    } catch {
+      // ignore
+    }
+  }, [selectedBranchId]);
+
+  // --- cross-tab sync ---
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const onStorage = (ev: StorageEvent) => {
+      if (ev.key === STORAGE_KEY) {
+        setSelectedBranchIdState(ev.newValue);
+      }
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
   }, []);
 
-  useEffect(() => {
-    if (!uid) {
-      setLoading(true);
-      return; // ยังไม่รู้ตัวตน → ยังไม่ subscribe
-    }
-
-    const unsub = onSnapshot(
-      collection(db, 'stores'),
-      (snap) => {
-        const list: Branch[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            branchName: data.branchName ?? d.id,
-            location: data.location,
-            isActive: data.isActive !== false,
-            orgId: data.orgId,
-          };
-        });
-
-        setBranches(list);
-        setLoading(false);
-        setError(null);
-
-        if (!selectedBranchId && list.length > 0) {
-          const saved = typeof window !== 'undefined' ? localStorage.getItem(LS_KEY) : null;
-          const pick = (saved && list.find((b) => b.id === saved)?.id) || list[0]?.id || null;
-          if (pick) setSelectedBranchIdState(pick);
-        }
-      },
-      (err) => {
-        setError(err.message);
-        setLoading(false);
-      }
-    );
-
-    return () => unsub();
-  }, [uid, selectedBranchId]);
-
-  const setSelectedBranchId = (id: string) => {
-    setSelectedBranchIdState(id);
-    if (typeof window !== 'undefined') localStorage.setItem(LS_KEY, id);
-    setRefreshKey((k) => k + 1);
-  };
-
+  // --- derived selectedBranch ---
   const selectedBranch = useMemo(
-    () => branches.find((b) => b.id === selectedBranchId) ?? null,
+    () => (selectedBranchId ? branches.find((b) => b.id === selectedBranchId) ?? null : null),
     [branches, selectedBranchId]
   );
 
-  const value: BranchContextType = {
-    branches,
-    loading,
-    error,
-    selectedBranchId,
-    selectedBranch,
-    setSelectedBranchId,
-    activeBranchId: selectedBranchId,
-    activeBranchName: selectedBranch?.branchName ?? (selectedBranchId ?? ''),
-    setActiveBranch: (id: string) => setSelectedBranchId(id),
-    refreshKey,
-  };
+  // --- public setter (ป้องกันกรณีเลือก id ที่ไม่มีในลิสต์) ---
+  const setSelectedBranchId = useCallback(
+    (id: string) => {
+      if (!id) return;
+      const exists = branches.some((b) => b.id === id);
+      if (exists) {
+        setSelectedBranchIdState(id);
+      } else {
+        // ถ้า id ไม่อยู่ในลิสต์ล่าสุด ให้รีโหลดก่อน แล้วค่อยตั้ง (กัน race)
+        void (async () => {
+          await load();
+          const existsAfter = (prev: Branch[]) => prev.some((b) => b.id === id);
+          setBranches((prev) => {
+            if (existsAfter(prev)) setSelectedBranchIdState(id);
+            return prev;
+          });
+        })();
+      }
+    },
+    [branches, load]
+  );
+
+  const value = useMemo<BranchContextValue>(
+    () => ({
+      branches,
+      selectedBranchId,
+      selectedBranch,
+      setSelectedBranchId,
+      loading,
+      error,
+      refresh: load,
+    }),
+    [branches, selectedBranchId, selectedBranch, setSelectedBranchId, loading, error, load]
+  );
 
   return <BranchContext.Provider value={value}>{children}</BranchContext.Provider>;
 }
 
+//
+// ===== Hooks =====
+//
 export function useBranch() {
   const ctx = useContext(BranchContext);
-  if (!ctx) throw new Error('useBranch must be used within BranchProvider');
+  if (!ctx) {
+    throw new Error('useBranch must be used within a BranchProvider');
+  }
+  return ctx;
+}
+
+/**
+ * Hook สะดวกใช้ในคอมโพเนนต์ที่ต้อง “ต้องมีสาขาเลือกแล้วเสมอ”
+ * - ถ้าไม่มีสาขา และไม่อยู่ระหว่างโหลด → โยน error ให้ page จัดการเอง (เช่น แสดง onboarding)
+ */
+export function useRequiredBranch() {
+  const ctx = useBranch();
+  const { selectedBranch, loading } = ctx;
+
+  if (!loading && !selectedBranch) {
+    throw new Error('No branch selected or you have no visible branches.');
+  }
   return ctx;
 }

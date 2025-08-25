@@ -264,14 +264,15 @@ async function resolveCanonicalIds(
 export const StoreService = {
   /** ⚠️ อ่านทั้งคอลเลกชัน — ระวังชน rules ถ้า user ไม่มีสิทธิ์ทุกสาขา */
   async getAllStores(): Promise<Record<string, string>> {
-    const snap = await getDocs(collection(db, 'stores'));
-    const out: Record<string, string> = {};
-    snap.forEach((d) => {
-      const data = d.data() as any;
-      out[d.id] = data.branchName ?? d.id;
-    });
-    return out;
-  },
+  const r = await fetch('/api/branches/visible', { cache: 'no-store' });
+  const d = await r.json();
+  if (!r.ok || !d?.ok) throw new Error(d?.error || 'failed to load branches');
+  const out: Record<string, string> = {};
+  (d.branches as any[]).forEach((b) => {
+    out[b.id] = b.branchName ?? b.id;
+  });
+  return out;
+},
 
   async isStoreIdAvailable(storeId: string): Promise<boolean> {
     const ref = doc(db, 'stores', storeId);
