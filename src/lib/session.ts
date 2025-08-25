@@ -1,76 +1,69 @@
 // src/lib/session.ts
-import { cookies } from "next/headers";
+import { cookies as nextCookies } from "next/headers";
 import { adminAuth, db } from "@/src/lib/firebaseAdmin";
 
-export type SessionUser = {
+export type Role = "SALES" | "ADMIN";
+
+export type Me = {
   uid: string;
-  email?: string | null;
-  username?: string | null;
+  email?: string;
   moderator: boolean;
-  selectedBranchId?: string | null;
-  branches: { id: string; roles: ("ADMIN" | "SALES")[] }[];
+  branches: { id: string; roles: Role[] }[];
+  selectedBranchId?: string | null; // <- เพิ่ม
 };
 
-export type Permission =
-  | "inventory:read"
-  | "inventory:write"
-  | "users:manage";
+export async function getServerSession(): Promise<Me | null> {
+  // NOTE: ใน Next เวอร์ชันของคุณ cookies() เป็น async
+  const cookieStore = await nextCookies();
+  const token = cookieStore.get("session")?.value;
+  if (!token) return null;
 
-const rolePerms: Record<"ADMIN" | "SALES", Permission[]> = {
-  ADMIN: ["inventory:read", "inventory:write", "users:manage"],
-  SALES: ["inventory:read", "inventory:write"],
-};
+  try {
+    const decoded = await adminAuth.verifySessionCookie(token, true);
+    const uid = decoded.uid;
+    const moderator = !!(decoded as any).moderator;
+    const selectedBranchId = cookieStore.get("sb")?.value || null;
 
-export function canDo(params: {
-  moderator: boolean;
-  roleInBranch?: "ADMIN" | "SALES" | null;
-  perm: Permission;
-}) {
-  if (params.moderator) return true;
-  if (!params.roleInBranch) return false;
-  return rolePerms[params.roleInBranch]?.includes(params.perm) ?? false;
+    // โหลดบทบาทต่อสาขา
+    const snap = await db
+      .collection("userBranchRoles")
+      .where("uid", "==", uid)
+      .get();
+
+    const byBranch = new Map<string, Set<Role>>();
+    snap.forEach((d) => {
+      const { branchId, role } = d.data() as any;
+      if (!branchId || !role) return;
+      if (!byBranch.has(branchId)) byBranch.set(branchId, new Set<Role>());
+      byBranch.get(branchId)!.add(role as Role);
+    });
+
+    const branches = [...byBranch.entries()].map(([id, roles]) => ({
+      id,
+      roles: [...roles],
+    }));
+
+    return {
+      uid,
+      email: (decoded as any).email,
+      moderator,
+      branches,
+      selectedBranchId,
+    };
+  } catch {
+    return null;
+  }
 }
 
-export async function getServerSession(): Promise<SessionUser | null> {
-  // ⬇️ Next.js 15: cookies() เป็น async
-  const cookieStore = await cookies();
-  const cookie = cookieStore.get("session")?.value;
-  if (!cookie) return null;
+// helper: หา role ของ user ในสาขา
+export function roleIn(me: Me, branchId?: string | null): Role | null {
+  if (me.moderator) return "ADMIN";
+  const id = branchId ?? me.selectedBranchId ?? undefined;
+  if (!id) return null;
+  return (me.branches.find((b) => b.id === id)?.roles?.[0] ?? null) as Role | null;
+}
 
-  const decoded = await adminAuth.verifySessionCookie(cookie, true).catch(() => null);
-  if (!decoded) return null;
-
-  const uid = decoded.uid;
-  const userRecord = await adminAuth.getUser(uid);
-  const moderator = Boolean(userRecord.customClaims?.moderator);
-
-  // profile
-  const profSnap = await db.collection("users").doc(uid).get();
-  const username = profSnap.get("username") ?? userRecord.displayName ?? null;
-  const email = profSnap.get("email") ?? userRecord.email ?? null;
-
-  // branch roles
-  const rolesSnap = await db.collection("userBranchRoles").where("uid", "==", uid).get();
-  const map = new Map<string, Set<"ADMIN" | "SALES">>();
-  rolesSnap.forEach((d) => {
-    const bid = d.get("branchId");
-    const role = d.get("role");
-    const set = map.get(bid) ?? new Set();
-    set.add(role);
-    map.set(bid, set);
-  });
-  const branches = [...map.entries()].map(([id, set]) => ({
-    id,
-    roles: [...set] as ("ADMIN" | "SALES")[],
-  }));
-
-  // ใช้ cookie 'sb' ถ้าอนุญาต
-  const sb = cookieStore.get("sb")?.value ?? null;
-  const selectedBranchId = moderator
-    ? sb
-    : branches.some((b) => b.id === sb)
-    ? sb
-    : branches[0]?.id ?? null;
-
-  return { uid, email, username, moderator, selectedBranchId, branches };
+// shim เก่า: บางไฟล์อาจ import canDo จากที่นี่
+export function canDo(me: Me, branchId?: string | null) {
+  return { moderator: me.moderator, roleInBranch: roleIn(me, branchId), perm: {} as any };
 }

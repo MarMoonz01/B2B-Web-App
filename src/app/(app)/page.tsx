@@ -2,12 +2,12 @@
 import { redirect } from "next/navigation";
 import { getServerSession } from "@/src/lib/session";
 import { canDo } from "@/src/lib/perm";
-import AppShell from "src/app/app/shell";  // header/sidebar (client)
-import InventoryView from "src/app/app/views/InventoryView";
-import TransferView from "src/app/app/views/TransferView";
-import TransferRequestsView from "src/app/app/views/TransferRequestView";
-import BranchUsersView from "src/app/app/views/BranchUsersView"; // (ขั้นถัดไป)
-import AnalyticsView from "src/app/app/views/AnalyticsView";     // (optional)
+import AppShell from "@/src/app/(app)/shell";  // header/sidebar (client)
+import InventoryView from "@/src/app/(app)/app/views/InventoryView";
+import TransferView from "@/src/app/(app)/app/views/TransferView";
+import TransferRequestsView from "@/src/app/(app)/app/views/TransferRequestView";
+import BranchUsersView from "@/src/app/(app)/app/views/BranchUsersView"; // (ขั้นถัดไป)
+import AnalyticsView from "@/src/app/(app)/app/views/AnalyticsView";     // (optional)
 
 export default async function AppPage({ searchParams }: { searchParams: { view?: string } }) {
   const me = await getServerSession();

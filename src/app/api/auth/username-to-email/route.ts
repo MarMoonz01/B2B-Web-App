@@ -10,7 +10,7 @@ export async function POST(req: Request) {
     .limit(1)
     .get();
 
-  if (snap.empty) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
+  if (snap.empty) return NextResponse.json({ ok: false, error: "invalid credentials" }, { status: 200 });
   const email = snap.docs[0].get("email");
   return NextResponse.json({ ok: true, email });
 }

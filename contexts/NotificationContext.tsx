@@ -1,18 +1,36 @@
 // contexts/NotificationContext.tsx
-'use client'; // << [FIX] แก้ไขจาก 'use-client' เป็น 'use client'
+'use client';
 
-import React, { createContext, useContext, useEffect, useState, useCallback } from 'react';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  useCallback,
+} from 'react';
 import { db } from '@/lib/firebase';
-import { collection, query, where, onSnapshot, doc, updateDoc, orderBy } from 'firebase/firestore';
-import { useBranch } from './BranchContext';
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  doc,
+  updateDoc,
+  orderBy,
+  limit,
+  writeBatch,
+} from 'firebase/firestore';
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
+import { useBranch } from '@/contexts/BranchContext';
 import type { Notification } from '@/lib/services/InventoryService';
 
 type NotificationContextType = {
   notifications: Notification[];
   unreadCount: number;
   loading: boolean;
-  markAsRead: (id: string) => void;
-  markAllAsRead: () => void;
+  ready: boolean;               // ล็อกอิน + มี branch แล้วหรือยัง
+  markAsRead: (id: string) => Promise<void>;
+  markAllAsRead: () => Promise<void>;
 };
 
 const NotificationContext = createContext<NotificationContextType | null>(null);
@@ -21,83 +39,87 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const { selectedBranchId } = useBranch();
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
+  const [authed, setAuthed] = useState(false);
 
+  // ติดตามสถานะล็อกอิน
   useEffect(() => {
-    if (!selectedBranchId) {
+    const auth = getAuth();
+    const off = onAuthStateChanged(auth, (u) => setAuthed(!!u));
+    return () => off();
+  }, []);
+
+  // subscribe เฉพาะเมื่อ authed + มี branch
+  useEffect(() => {
+    if (!authed || !selectedBranchId) {
       setNotifications([]);
       setLoading(false);
       return;
     }
 
     setLoading(true);
-    const q = query(
+    const qref = query(
       collection(db, 'notifications'),
       where('branchId', '==', selectedBranchId),
-      orderBy('createdAt', 'desc')
+      orderBy('createdAt', 'desc'),
+      limit(100)
     );
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const notifs = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Notification));
-      setNotifications(notifs);
-      setLoading(false);
-    }, (error) => {
-      console.error("Error fetching notifications:", error);
-      setLoading(false);
-    });
+    const unsubscribe = onSnapshot(
+      qref,
+      (snapshot) => {
+        const rows = snapshot.docs.map(
+          (d) => ({ id: d.id, ...(d.data() as any) }) as Notification
+        );
+        setNotifications(rows);
+        setLoading(false);
+      },
+      (error) => {
+        console.error('Error fetching notifications:', error);
+        setNotifications([]);
+        setLoading(false);
+      }
+    );
 
     return () => unsubscribe();
-  }, [selectedBranchId]);
+  }, [authed, selectedBranchId]);
 
-  const unreadCount = notifications.filter(n => !n.isRead).length;
+  const unreadCount = notifications.reduce((n, x) => n + (!x.isRead ? 1 : 0), 0);
+  const ready = authed && !!selectedBranchId;
 
   const markAsRead = useCallback(async (id: string) => {
     if (!id) return;
-    
-    const notif = notifications.find(n => n.id === id);
-    if (notif && !notif.isRead) {
-      try {
-        const notifRef = doc(db, 'notifications', id);
-        await updateDoc(notifRef, { isRead: true });
-      } catch (error) {
-        console.error(`Failed to mark notification ${id} as read:`, error);
-      }
+    const n = notifications.find((x) => x.id === id);
+    if (!n || n.isRead) return;
+    try {
+      await updateDoc(doc(db, 'notifications', id), { isRead: true });
+    } catch (error) {
+      console.error(`Failed to mark notification ${id} as read:`, error);
     }
   }, [notifications]);
 
   const markAllAsRead = useCallback(async () => {
-    const unreadNotifications = notifications.filter(n => !n.isRead && n.id);
-    if (unreadNotifications.length === 0) return;
-
+    const unread = notifications.filter((n) => !n.isRead && n.id);
+    if (unread.length === 0) return;
     try {
-      const batch = unreadNotifications.map(notif => {
-        const notifRef = doc(db, 'notifications', notif.id!);
-        return updateDoc(notifRef, { isRead: true });
-      });
-      await Promise.all(batch);
+      const batch = writeBatch(db);
+      unread.forEach((n) => batch.update(doc(db, 'notifications', n.id!), { isRead: true }));
+      await batch.commit();
     } catch (error) {
-      console.error("Failed to mark all as read:", error);
+      console.error('Failed to mark all as read:', error);
     }
   }, [notifications]);
 
-  const value = {
-    notifications,
-    unreadCount,
-    loading,
-    markAsRead,
-    markAllAsRead,
-  };
-
   return (
-    <NotificationContext.Provider value={value}>
+    <NotificationContext.Provider
+      value={{ notifications, unreadCount, loading, ready, markAsRead, markAllAsRead }}
+    >
       {children}
     </NotificationContext.Provider>
   );
 }
 
 export function useNotifications() {
-  const context = useContext(NotificationContext);
-  if (!context) {
-    throw new Error('useNotifications must be used within a NotificationProvider');
-  }
-  return context;
+  const ctx = useContext(NotificationContext);
+  if (!ctx) throw new Error('useNotifications must be used within a NotificationProvider');
+  return ctx;
 }

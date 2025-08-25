@@ -1,0 +1,120 @@
+--- a/middleware.ts
++++ b/middleware.ts
+@@ -5,18 +5,14 @@
+ const PROTECTED_PREFIXES = ["/app"]; // ✅ ใช้ /app เป็น gateway เดียว
+ 
+ export function middleware(req: NextRequest) {
++  const isProd = process.env.NODE_ENV === "production";
++
+   const { pathname, search } = req.nextUrl;
+ 
+-  // สาธารณะ
+-  if (
+-    pathname.startsWith("/api") ||
+-    pathname.startsWith("/_next") ||
+-    pathname === "/" ||
+-    pathname.startsWith("/login") ||
+-    pathname.startsWith("/debug")
+-  ) {
+-    return NextResponse.next();
++  if (isProd && pathname.startsWith("/debug")) {
++    return NextResponse.redirect(new URL("/", req.url));
+   }
++
+ 
+   // กันโซน /app
+   const needsAuth = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
+
+--- a/src/app/(app)/app/profile/page.tsx
++++ b/src/app/(app)/app/profile/page.tsx
+@@ -15,6 +15,17 @@
+ import { Separator } from '@/components/ui/separator';
+ import { Building2, Mail, MapPin, Shield, Bell, Cog } from 'lucide-react';
+ 
++
++async function handleSignOut(router: ReturnType<typeof useRouter>) {
++  try {
++    await fetch("/api/auth/sessionLogout", { method: "POST" });
++    const auth = await getClientAuth();
++    await fbSignOut(auth);
++  } catch (_) {
++  } finally {
++    router.replace("/login");
++  }
++}
+ export default function ProfilePage() {
+   const router = useRouter();
+   const signOut = () => {
+@@ -34,7 +45,7 @@
+         </div>
+         <div className="flex gap-2">
+           <Button variant="outline">Edit Profile</Button>
+-          <Button variant="destructive" onClick={signOut}>Sign out</Button>
++          <Button variant="destructive" onClick={() => handleSignOut(router)}>Sign out</Button>
+         </div>
+       </div>
+ 
+
+--- a/src/app/api/auth/sessionLogin/route.ts
++++ b/src/app/api/auth/sessionLogin/route.ts
+@@ -29,7 +29,7 @@
+     const res = NextResponse.json({ ok: true });
+     res.cookies.set("session", sessionCookie, {
+       httpOnly: true,
+-      secure: true,
++      secure: process.env.NODE_ENV === "production",
+       sameSite: "lax",
+       path: "/",
+       maxAge: Math.floor(expiresIn / 1000),
+
+--- a/src/app/api/auth/username-to-email/route.ts
++++ b/src/app/api/auth/username-to-email/route.ts
+@@ -10,7 +10,7 @@
+     .limit(1)
+     .get();
+ 
+-  if (snap.empty) return NextResponse.json({ ok: false, error: "not found" }, { status: 404 });
++  if (snap.empty) return NextResponse.json({ ok: false, error: "invalid credentials" }, { status: 200 });
+   const email = snap.docs[0].get("email");
+   return NextResponse.json({ ok: true, email });
+ }
+
+--- a/src/app/api/debug/session/branch/route.ts
++++ b/src/app/api/debug/session/branch/route.ts
+@@ -3,7 +3,10 @@
+ import { getServerSession } from "@/src/lib/session";
+ 
+ export async function POST(req: Request) {
+-  try {
++    if (process.env.NODE_ENV === "production") {
++    return NextResponse.json({ ok: false, error: "disabled in production" }, { status: 404 });
++  }
++try {
+     const body = await req.json().catch(() => ({}));
+     const { branchId } = body || {};
+     if (!branchId) {
+@@ -26,7 +29,8 @@
+       httpOnly: true,
+       sameSite: "lax",
+       path: "/",
+-      // ไม่ต้อง secure ใน dev; ใน prod ตั้ง secure: true
++      // ไม่ต้อง secure ใน dev; ใน prod ตั้ง secure: process.env.NODE_ENV === "production"
++      secure: process.env.NODE_ENV === "production",
+     });
+     return res;
+   } catch (e: any) {
+
+--- a/src/app/api/debug/session/route.ts
++++ b/src/app/api/debug/session/route.ts
+@@ -3,7 +3,10 @@
+ import { getServerSession } from "@/src/lib/session";
+ 
+ export async function GET() {
+-  try {
++    if (process.env.NODE_ENV === "production") {
++    return NextResponse.json({ ok: false, error: "disabled in production" }, { status: 404 });
++  }
++try {
+     const session = await getServerSession();
+     // จะเป็น object (ถ้ามี session) หรือ null (ถ้ายังไม่ login)
+     return NextResponse.json(session);

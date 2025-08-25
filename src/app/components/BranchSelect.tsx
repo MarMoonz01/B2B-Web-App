@@ -1,10 +1,10 @@
+// src/components/BranchSelect.tsx (หรือพาธที่คุณวางอยู่)
 'use client';
 
 import * as React from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Building2, ChevronsUpDown, Check } from 'lucide-react';
 
-import { StoreService } from '@/lib/services/InventoryService';
 import { useBranch } from '@/contexts/BranchContext';
 
 import { Button } from '@/components/ui/button';
@@ -19,14 +19,26 @@ import {
 } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 
+type VisibleBranch = { id: string; branchName?: string; name?: string; isActive?: boolean };
+
 export default function BranchSelect() {
   const qc = useQueryClient();
   const { selectedBranchId, setSelectedBranchId } = useBranch();
   const [open, setOpen] = React.useState(false);
 
-  const { data, isLoading } = useQuery({
+  // ดึงสาขาที่ผู้ใช้ "มองเห็นได้" ผ่าน API (ไม่ชน Firestore rules)
+  const { data, isLoading, error } = useQuery({
     queryKey: ['stores'],
-    queryFn: StoreService.getAllStores, // expected: Record<branchId, branchName>
+    queryFn: async (): Promise<Record<string, string>> => {
+      const r = await fetch('/api/branches/visible', { cache: 'no-store' });
+      const d = await r.json();
+      if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+      const out: Record<string, string> = {};
+      (d.branches as VisibleBranch[]).forEach((b) => {
+        out[b.id] = (b.branchName || b.name || b.id).toString();
+      });
+      return out;
+    },
     staleTime: 5 * 60_000,
   });
 
@@ -53,9 +65,7 @@ export default function BranchSelect() {
 
   const choose = (id: string) => {
     setSelectedBranchId(id);
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('selectedBranchId', id);
-    }
+    if (typeof window !== 'undefined') localStorage.setItem('selectedBranchId', id);
     setOpen(false);
     // รีเฟรชข้อมูลที่อาศัยสาขา
     qc.invalidateQueries({ queryKey: ['inventory'] });
@@ -66,14 +76,12 @@ export default function BranchSelect() {
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          className="w-full justify-between"
-          aria-label="Select branch"
-        >
+        <Button variant="outline" className="w-full justify-between" aria-label="Select branch">
           <span className="flex items-center gap-2">
             <Building2 className="h-4 w-4" />
-            <span className="truncate">{currentName}</span>
+            <span className="truncate">
+              {error ? 'Error loading branches' : currentName}
+            </span>
           </span>
           <ChevronsUpDown className="h-4 w-4 opacity-60" />
         </Button>
@@ -83,24 +91,30 @@ export default function BranchSelect() {
         <Command>
           <CommandInput placeholder="Search branches..." />
           <CommandList>
-            <CommandEmpty>No branches found.</CommandEmpty>
-            <CommandGroup heading="All Branches">
-              {items.map((b) => (
-                <CommandItem
-                  key={b.id}
-                  value={`${b.name} ${b.id}`}
-                  onSelect={() => choose(b.id)}
-                >
-                  <Check
-                    className={cn(
-                      'mr-2 h-4 w-4',
-                      b.id === selectedBranchId ? 'opacity-100' : 'opacity-0'
-                    )}
-                  />
-                  <span className="truncate">{b.name}</span>
-                </CommandItem>
-              ))}
-            </CommandGroup>
+            {error ? (
+              <CommandEmpty>Missing or insufficient permissions.</CommandEmpty>
+            ) : (
+              <>
+                <CommandEmpty>No branches found.</CommandEmpty>
+                <CommandGroup heading="All Branches">
+                  {items.map((b) => (
+                    <CommandItem
+                      key={b.id}
+                      value={`${b.name} ${b.id}`}
+                      onSelect={() => choose(b.id)}
+                    >
+                      <Check
+                        className={cn(
+                          'mr-2 h-4 w-4',
+                          b.id === selectedBranchId ? 'opacity-100' : 'opacity-0'
+                        )}
+                      />
+                      <span className="truncate">{b.name}</span>
+                    </CommandItem>
+                  ))}
+                </CommandGroup>
+              </>
+            )}
           </CommandList>
         </Command>
       </PopoverContent>

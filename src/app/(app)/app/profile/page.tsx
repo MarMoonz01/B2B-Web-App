@@ -14,7 +14,19 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
 import { Building2, Mail, MapPin, Shield, Bell, Cog } from 'lucide-react';
+import { getClientAuth } from "@/src/lib/firebaseClient";
+import { signOut as fbSignOut } from "firebase/auth";
 
+async function handleSignOut(router: ReturnType<typeof useRouter>) {
+  try {
+    await fetch("/api/auth/sessionLogout", { method: "POST" });
+    const auth = await getClientAuth();
+    await fbSignOut(auth);
+  } catch (_) {
+  } finally {
+    router.replace("/login");
+  }
+}
 export default function ProfilePage() {
   const router = useRouter();
   const signOut = () => {
@@ -34,7 +46,7 @@ export default function ProfilePage() {
         </div>
         <div className="flex gap-2">
           <Button variant="outline">Edit Profile</Button>
-          <Button variant="destructive" onClick={signOut}>Sign out</Button>
+          <Button variant="destructive" onClick={() => handleSignOut(router)}>Sign out</Button>
         </div>
       </div>
 

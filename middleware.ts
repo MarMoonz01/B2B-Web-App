@@ -5,18 +5,14 @@ import type { NextRequest } from "next/server";
 const PROTECTED_PREFIXES = ["/app"]; // ✅ ใช้ /app เป็น gateway เดียว
 
 export function middleware(req: NextRequest) {
+  const isProd = process.env.NODE_ENV === "production";
+
   const { pathname, search } = req.nextUrl;
 
-  // สาธารณะ
-  if (
-    pathname.startsWith("/api") ||
-    pathname.startsWith("/_next") ||
-    pathname === "/" ||
-    pathname.startsWith("/login") ||
-    pathname.startsWith("/debug")
-  ) {
-    return NextResponse.next();
+  if (isProd && pathname.startsWith("/debug")) {
+    return NextResponse.redirect(new URL("/", req.url));
   }
+
 
   // กันโซน /app
   const needsAuth = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));

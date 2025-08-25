@@ -314,13 +314,15 @@ export default function MyInventory({
   
     // ---------- Data ----------
     const invQuery = useQuery({
-      queryKey: ['inventory', 'store', myBranchId, outOfStockOnly ? 'oos' : 'in'],
-      queryFn: async () => {
-        const stores = await StoreService.getAllStores();
-        const name = stores[myBranchId] ?? myBranchName ?? myBranchId;
-        const inv = await InventoryService.fetchStoreInventory(myBranchId, name, { includeZeroAndEmpty: outOfStockOnly });
-        return { inv, branchName: name };
-      },
+  queryKey: ['inventory','store', myBranchId, outOfStockOnly ? 'oos' : 'in'],
+  queryFn: async () => {
+    const store = await StoreService.getStore(myBranchId);
+    const name = store?.branchName || myBranchName || myBranchId;
+    const inv = await InventoryService.fetchStoreInventory(
+      myBranchId, name, { includeZeroAndEmpty: outOfStockOnly }
+    );
+    return { inv, branchName: name };
+  },
       enabled: !!myBranchId,
       staleTime: 60_000,
       refetchInterval: 60_000,
