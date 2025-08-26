@@ -4,7 +4,7 @@ export type Permission = "inventory:read" | "inventory:write" | "transfer:access
 
 const rolePerms: Record<Role, Permission[]> = {
   ADMIN: ["inventory:read", "inventory:write", "transfer:access", "users:manage"],
-  SALES: ["inventory:read", "inventory:write"],
+  SALES: ["inventory:read", "inventory:write", "transfer:access"], // <--- เพิ่ม "transfer:access" ตรงนี้
 };
 
 export function canDo(params: { moderator: boolean; roleInBranch?: Role | null; perm: Permission }) {

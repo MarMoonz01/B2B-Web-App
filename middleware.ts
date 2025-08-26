@@ -7,12 +7,11 @@ const PROTECTED_PREFIXES = ["/app"]; // ✅ ใช้ /app เป็น gateway 
 export function middleware(req: NextRequest) {
   const isProd = process.env.NODE_ENV === "production";
 
-  const { pathname, search } = req.nextUrl;
+  const { pathname } = req.nextUrl;
 
   if (isProd && pathname.startsWith("/debug")) {
     return NextResponse.redirect(new URL("/", req.url));
   }
-
 
   // กันโซน /app
   const needsAuth = PROTECTED_PREFIXES.some((p) => pathname.startsWith(p));
@@ -20,12 +19,14 @@ export function middleware(req: NextRequest) {
 
   const hasSession = req.cookies.get("session")?.value;
   if (!hasSession) {
+    // [แก้ไข] เปลี่ยนจาก redirect ไปหน้า login
+    // เป็นการ rewrite ไปที่หน้า 'no-permission' แทน
+    // การ rewrite จะไม่เปลี่ยน URL บน browser ของผู้ใช้
     const url = req.nextUrl.clone();
-    url.pathname = "/login";
-    // เก็บทั้ง path+query (เช่น ?view=inventory)
-    url.search = `?next=${encodeURIComponent(pathname + search)}`;
-    return NextResponse.redirect(url);
+    url.pathname = '/no-permission';
+    return NextResponse.rewrite(url);
   }
+  
   return NextResponse.next();
 }
 

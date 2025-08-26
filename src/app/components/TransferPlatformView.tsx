@@ -206,43 +206,50 @@ export default function TransferPlatformView({
   }>({
     queryKey: ['inventory', 'network', myBranchId],
     queryFn: async () => {
-      // Visible branches map {id: name}
-      const storeMap = await StoreService.getAllStores()
+      // 👇 [แก้ไข] ดึงข้อมูลสาขาจาก API ที่เช็คสิทธิ์ของผู้ใช้
+      const visibleBranchesRes = await fetch('/api/branches/visible');
+      if (!visibleBranchesRes.ok) {
+        throw new Error('Failed to fetch visible branches');
+      }
+      const visibleBranchesData = await visibleBranchesRes.json();
+      const allBranches: any[] = visibleBranchesData.branches || [];
 
-      // Build Branch[] for InventoryService.getNetworkInventory
-      const allBranches: { id: string; branchName: string }[] = Object.entries(storeMap).map(
-        ([id, branchName]) => ({ id, branchName })
-      )
+      // สร้าง storeMap จากข้อมูลสาขาที่ดึงมา
+      const storeMap = allBranches.reduce((acc, branch) => {
+        acc[branch.id] = branch.branchName;
+        return acc;
+      }, {} as Record<string, string>);
 
       // Load network inventory (excludes current branch internally)
-      const inv = await InventoryService.getNetworkInventory(myBranchId, allBranches)
+      const inv = await InventoryService.getNetworkInventory(myBranchId, allBranches);
 
       // Try to collect coordinates from Store documents (optional)
-      let coords: LatLngMap | undefined
+      let coords: LatLngMap | undefined;
       try {
         const entries = await Promise.all(
-          Object.keys(storeMap).map(async (id) => {
+          allBranches.map(async (branch) => { // ใช้ allBranches ที่กรองสิทธิ์แล้ว
             try {
-              const s = await StoreService.getStore(id)
-              const lat = s?.location?.lat
-              const lng = s?.location?.lng
-              return lat != null && lng != null ? [id, { lat, lng }] : [id, undefined]
+              const s = await StoreService.getStore(branch.id);
+              const lat = s?.location?.lat;
+              const lng = s?.location?.lng;
+              return lat != null && lng != null ? [branch.id, { lat, lng }] : [branch.id, undefined];
             } catch {
-              return [id, undefined] as const
+              return [branch.id, undefined] as const;
             }
           })
-        )
-        coords = Object.fromEntries(entries)
+        );
+        coords = Object.fromEntries(entries.filter(entry => entry[1] !== undefined));
       } catch {
         // ignore — distance will fall back to seededRand
       }
 
-      return { inv: inv ?? [], stores: storeMap ?? {}, coords }
+      return { inv: inv ?? [], stores: storeMap ?? {}, coords };
     },
     staleTime: 60_000,
     refetchInterval: anyModalOpen ? false : 60_000,
     refetchOnWindowFocus: !anyModalOpen,
-  })
+  });
+
 
   useEffect(() => {
     if (invQuery.isFetched) setLastUpdated(new Date())
@@ -346,8 +353,12 @@ export default function TransferPlatformView({
 
   async function preflightValidateCart(items: CartItemView[]): Promise<{ ok: boolean; message?: string }> {
     try {
-      // Build Branch[] once from current stores map
-      const allBranches = Object.entries(stores).map(([id, branchName]) => ({ id, branchName }))
+      // Build Branch[] from visible branches
+      const visibleBranchesRes = await fetch('/api/branches/visible');
+      if (!visibleBranchesRes.ok) throw new Error('Could not re-validate branches');
+      const visibleBranchesData = await visibleBranchesRes.json();
+      const allBranches: any[] = visibleBranchesData.branches || [];
+
       const latest = await InventoryService.getNetworkInventory(myBranchId, allBranches)
       const map: Record<string, any> = {}
       for (const p of latest ?? []) map[String(p.id)] = p
