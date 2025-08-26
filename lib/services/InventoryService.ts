@@ -1,4 +1,3 @@
-// lib/services/InventoryService.ts
 import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, serverTimestamp, setDoc, Timestamp, updateDoc, where, runTransaction, getFirestore } from "firebase/firestore";
 import { db } from '@/lib/firebase';
 
@@ -90,7 +89,6 @@ export type OrderItem = {
   dotCode: string;
   quantity: number;
   variantId: string;
-  // --- CHANGE: Make price optional ---
   unitPrice?: number;
   totalPrice?: number;
 };
@@ -104,7 +102,6 @@ export type Order = {
   sellerBranchName: string;
   status: OrderStatus;
   items: OrderItem[];
-  // --- CHANGE: Make totalAmount optional and add itemCount ---
   totalAmount?: number;
   itemCount: number;
   notes?: string;
@@ -113,7 +110,6 @@ export type Order = {
   cancelReason?: string;
 };
 
-// Current + legacy (confirmed, delivered) for compatibility
 export type OrderStatus =
   | 'requested'
   | 'approved'
@@ -121,8 +117,8 @@ export type OrderStatus =
   | 'shipped'
   | 'received'
   | 'cancelled'
-  | 'confirmed' // legacy -> treat as approved
-  | 'delivered'; // legacy -> treat as shipped/received in old UIs
+  | 'confirmed'
+  | 'delivered';
 
 export type StoreDoc = {
   branchName: string;
@@ -150,10 +146,9 @@ export type StoreDoc = {
   updatedAt?: any;
 };
 
-// Type for Notification
 export type Notification = {
   id?: string;
-  branchId: string; // ID of the branch to be notified
+  branchId: string;
   title: string;
   message: string;
   link: string;
@@ -161,6 +156,13 @@ export type Notification = {
   isRead: boolean;
   createdAt: Timestamp;
 };
+
+// This is a simplified Branch type for the new function
+export type Branch = {
+  id: string;
+  branchName: string;
+};
+
 
 /* =========================
  * Utils
@@ -188,13 +190,6 @@ function specFromVariant(
   return size && li ? `${size} (${li})` : (size || li || '');
 }
 
-/**
- * Canonical rules:
- * - Brand IDs: UPPERCASE (เช่น MICHELIN)
- * - Model IDs: slug (lowercase-with-dash)
- * ฟังก์ชัน resolve* จะพยายามหา doc ที่มีอยู่จริงก่อน (ทั้ง exact/upper/slug/lower)
- * ถ้าไม่เจอ จะคืนค่าตามกติกาข้างบน
- */
 async function resolveBrandId(
   storeId: string,
   brandIdOrName: string
@@ -231,7 +226,6 @@ async function resolveModelId(
   return slugifyId(modelIdOrName);
 }
 
-/** รวม brand+model canonicalization สำหรับ OrderService */
 async function resolveCanonicalIds(
   storeId: string,
   brandIdRaw: string,
@@ -246,17 +240,16 @@ async function resolveCanonicalIds(
  * Store Service
  * =======================*/
 export const StoreService = {
-  /** ⚠️ อ่านทั้งคอลเลกชัน — ระวังชน rules ถ้า user ไม่มีสิทธิ์ทุกสาขา */
   async getAllStores(): Promise<Record<string, string>> {
-  const r = await fetch('/api/branches/visible', { cache: 'no-store' });
-  const d = await r.json();
-  if (!r.ok || !d?.ok) throw new Error(d?.error || 'failed to load branches');
-  const out: Record<string, string> = {};
-  (d.branches as any[]).forEach((b) => {
-    out[b.id] = b.branchName ?? b.id;
-  });
-  return out;
-},
+    const r = await fetch('/api/branches/visible', { cache: 'no-store' });
+    const d = await r.json();
+    if (!r.ok || !d?.ok) throw new Error(d?.error || 'failed to load branches');
+    const out: Record<string, string> = {};
+    (d.branches as any[]).forEach((b) => {
+      out[b.id] = b.branchName ?? b.id;
+    });
+    return out;
+  },
 
   async isStoreIdAvailable(storeId: string): Promise<boolean> {
     const ref = doc(db, 'stores', storeId);
@@ -295,7 +288,6 @@ export const StoreService = {
     return { ...(ds.data() as any) } as StoreDoc;
   },
 
-  /** ✅ ใหม่: ดึงชื่อสาขาแบบระบุ id ที่ต้องการเท่านั้น */
   async getStoreNamesByIds(ids: string[]): Promise<Record<string, string>> {
     const out: Record<string, string> = {};
     await Promise.all(
@@ -369,7 +361,6 @@ export const InventoryService = {
     return { brandId, modelId };
   },
 
-  /** สร้าง variant ถ้ายังไม่มี (canonical path) */
   async ensureVariantPath(
     storeId: string,
     brandId: string,
@@ -380,17 +371,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const vRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants',
-      variantId
-    );
+    const vRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId);
     const v = await getDoc(vRef);
     if (!v.exists()) {
       await setDoc(vRef, {
@@ -411,7 +392,6 @@ export const InventoryService = {
     return { brandId: bId, modelId: mId, variantId };
   },
 
-  /** สร้าง dot ถ้ายังไม่มี (canonical path) */
   async ensureDotDoc(
     storeId: string,
     brandId: string,
@@ -423,19 +403,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const dRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
+    const dRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const d = await getDoc(dRef);
     if (!d.exists()) {
       await setDoc(dRef, {
@@ -458,7 +426,6 @@ export const InventoryService = {
 
   /* ---------- Read: inventory ---------- */
 
-  /** ดึง inventory ของสาขาเดียว */
   async fetchStoreInventory(
     storeId: string,
     storeName?: string,
@@ -540,28 +507,23 @@ export const InventoryService = {
     return products;
   },
 
-  /** 🚫 เลิกใช้: อ่าน inventory ทุกสาขา (จะชน security rules ใหม่เกือบแน่) */
   async fetchInventory(): Promise<GroupedProduct[]> {
     throw new Error(
       'InventoryService.fetchInventory() ถูกยกเลิก — โปรดใช้ fetchInventoryFor(allowedBranchIds) แทน'
     );
   },
 
-  /** ✅ ใหม่: ดึง inventory เฉพาะสาขาที่ระบุ (ตามสิทธิ์ user) */
   async fetchInventoryFor(branchIds: string[]): Promise<GroupedProduct[]> {
     if (!branchIds?.length) return [];
 
     const productMap = new Map<string, GroupedProduct>();
 
     for (const sId of branchIds) {
-      // ชื่อสาขา
       let storeName = sId;
       try {
         const s = await StoreService.getStore(sId);
         if (s?.branchName) storeName = s.branchName;
-      } catch {
-        /* ignore */
-      }
+      } catch { /* ignore */ }
 
       try {
         const storeProducts = await this.fetchStoreInventory(sId, storeName);
@@ -580,7 +542,30 @@ export const InventoryService = {
     return Array.from(productMap.values());
   },
 
-  /** แปลง GroupedProduct → path ids (คืนค่า raw; ไป resolve ตอนใช้งานจริง) */
+  // +++ เพิ่มฟังก์ชันที่ขาดหายไปตรงนี้ +++
+  async getNetworkInventory(
+    currentBranchId: string,
+    allBranches: Branch[]
+  ): Promise<GroupedProduct[]> {
+    if (!currentBranchId || !allBranches || allBranches.length === 0) {
+      return [];
+    }
+  
+    // สร้าง list ของ ID สาขาอื่นๆ ที่ไม่ใช่สาขาปัจจุบัน
+    const otherBranchIds = allBranches
+      .map((b) => b.id)
+      .filter((id) => id !== currentBranchId);
+  
+    // ถ้าไม่มีสาขาอื่นเลย ก็ไม่ต้องค้นหา
+    if (otherBranchIds.length === 0) {
+      return [];
+    }
+  
+    // เรียกใช้ฟังก์ชันเดิมที่มีอยู่แล้วเพื่อดึงข้อมูล
+    return this.fetchInventoryFor(otherBranchIds);
+  },
+  // +++ สิ้นสุดส่วนที่เพิ่ม +++
+
   parseProductInfo(
     product: GroupedProduct,
     branchId: string,
@@ -593,7 +578,6 @@ export const InventoryService = {
     return { storeId: branchId, brandId, modelId, variantId, dotCode };
   },
 
-  /** รายการ variants (canonical) */
   async getVariantsForProduct(
     storeId: string,
     brandId: string,
@@ -602,16 +586,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const vRef = collection(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants'
-    );
+    const vRef = collection(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants');
     const vs = await getDocs(vRef);
     return vs.docs.map((d) => {
       const data = d.data() as any;
@@ -636,19 +611,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const dotRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
+    const dotRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const snap = await getDoc(dotRef);
     if (!snap.exists()) throw new Error(`DOT ${dotCode} not found`);
     await updateDoc(dotRef, {
@@ -667,17 +630,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const vRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants',
-      variantId
-    );
+    const vRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId);
     const vSnap = await getDoc(vRef);
     if (!vSnap.exists()) throw new Error(`Variant ${variantId} not found`);
 
@@ -704,19 +657,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const dRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
+    const dRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const d = await getDoc(dRef);
     if (!d.exists()) throw new Error(`DOT ${dotCode} not found`);
     await updateDoc(dRef, {
@@ -735,25 +676,12 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const dRef = doc(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants',
-      variantId,
-      'dots',
-      dotCode
-    );
+    const dRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const d = await getDoc(dRef);
     if (!d.exists()) throw new Error(`DOT ${dotCode} not found`);
     await deleteDoc(dRef);
   },
 
-  /** เปลี่ยนชื่อที่แสดง (ไม่เปลี่ยน id) */
   async updateProductMeta(
     storeId: string,
     brandId: string,
@@ -779,7 +707,6 @@ export const InventoryService = {
     }
   },
 
-  /** list DOTs (ทั้งหมดของ model หรือเจาะ variantId ถ้าส่งมา) */
   async listDots(
     storeId: string,
     brandId: string,
@@ -798,16 +725,7 @@ export const InventoryService = {
     const bId = await resolveBrandId(storeId, brandId);
     const mId = await resolveModelId(storeId, bId, modelId);
 
-    const vCol = collection(
-      db,
-      'stores',
-      storeId,
-      'inventory',
-      bId,
-      'models',
-      mId,
-      'variants'
-    );
+    const vCol = collection(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants');
     const vSnap = variantId
       ? { docs: [await getDoc(doc(vCol, variantId))] }
       : await getDocs(vCol);
@@ -996,7 +914,6 @@ export const OrderService = {
     });
   },
 
-  /** 🚚 Ship: ตัดสต็อกจากสาขาผู้ส่ง (กันสต็อกติดลบด้วย transaction) + log transfer_out */
   async shipTransfer(orderId: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
     const orderSnap = await getDoc(ref);
@@ -1024,19 +941,7 @@ export const OrderService = {
       );
 
       await runTransaction(db, async (tx) => {
-        const dotRef = doc(
-          db,
-          'stores',
-          order.sellerBranchId,
-          'inventory',
-          bId,
-          'models',
-          mId,
-          'variants',
-          item.variantId,
-          'dots',
-          item.dotCode
-        );
+        const dotRef = doc(db, 'stores', order.sellerBranchId, 'inventory', bId, 'models', mId, 'variants', item.variantId, 'dots', item.dotCode);
         const ds = await tx.get(dotRef);
         if (!ds.exists()) throw new Error(`DOT ${item.dotCode} not found at seller branch`);
         const curQty = Number((ds.data() as any).qty || 0);
@@ -1076,7 +981,6 @@ export const OrderService = {
     });
   },
 
-  /** 📦 Receive: เพิ่มสต็อกให้สาขาผู้รับ (สร้าง path/dot ถ้ายังไม่มี) + log transfer_in */
   async receiveTransfer(orderId: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
     const orderSnap = await getDoc(ref);
@@ -1162,12 +1066,10 @@ export const OrderService = {
     });
   },
 
-  /** alias เดิม: deliverTransfer = shipped (legacy) */
   async deliverTransfer(orderId: string): Promise<void> {
     return this.shipTransfer(orderId);
   },
 
-  /** ❌ Cancel (ยกเลิกได้เฉพาะก่อน ship) */
   async cancelTransfer(orderId: string, reason?: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
     const snap = await getDoc(ref);

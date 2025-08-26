@@ -1,10 +1,57 @@
-// ⚠️ DANGER — เปิดอ่าน/เขียนได้ทุกคน แม้ไม่ล็อกอิน
-// ใช้เฉพาะทดสอบชั่วคราว แล้วรีบเปลี่ยนกลับทันที
 rules_version = '2';
+
 service cloud.firestore {
   match /databases/{database}/documents {
-    match /{document=**} {
-      allow read, write: if true;
+
+    // ฟังก์ชันสำหรับตรวจสอบสิทธิ์
+    function isSignedIn() {
+      return request.auth != null;
     }
+
+    function getUserData() {
+      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data;
+    }
+
+    function hasRole(role) {
+      // ตรวจสอบจาก custom claims ที่อยู่ใน token ของ user
+      return request.auth.token.roles.hasAny(role);
+    }
+
+    // --- Rules Default ---
+    // โดยทั่วไปแล้ว ไม่ควรให้ใครเข้าถึงข้อมูลได้เลย นอกจากจะระบุเป็นราย collection
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Collection: users ---
+    // อนุญาตให้เจ้าของโปรไฟล์อ่าน/แก้ไขข้อมูลตัวเองได้เท่านั้น
+    match /users/{userId} {
+      allow read, update: if request.auth.uid == userId;
+    }
+
+    // --- Collection: branches & stores ---
+    // ทุกคนที่ล็อกอิน สามารถอ่านข้อมูลสาขาและร้านค้าได้
+    match /(branches|stores)/{docId} {
+      allow read: if isSignedIn();
+      // เฉพาะ Admin เท่านั้นที่แก้ไขได้
+      allow write: if hasRole(['admin']);
+    }
+    
+    // --- Collection: notifications ---
+    // User สามารถอ่าน Notification ที่เป็นของตัวเองได้ (เช็คจาก branchId)
+    // และสามารถอัปเดต (เช่น mark as read) ได้
+    match /notifications/{notifId} {
+      allow read, update: if isSignedIn() && resource.data.branchId in getUserData().branches;
+    }
+    
+    // --- Collection: orders & transfers ---
+    // User จะต้องมี role 'user' และเอกสารนั้นต้องเกี่ยวข้องกับสาขาของตนเอง
+     match /(orders|transfers)/{docId} {
+        allow read, write: if hasRole(['user']) && 
+                            (resource.data.buyerBranchId in getUserData().branches ||
+                             resource.data.sellerBranchId in getUserData().branches ||
+                             resource.data.fromBranchId in getUserData().branches ||
+                             resource.data.toBranchId in getUserData().branches);
+     }
   }
 }

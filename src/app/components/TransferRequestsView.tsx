@@ -265,8 +265,9 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
     return () => window.removeEventListener('keydown', onKey);
   }, [activePane, buyerOrders, sellerOrders, searchQ, statusFilter, dateFrom, dateTo, focusedIdxIncoming, focusedIdxOutgoing]);
 
-  // ====== Per-card pending ======
-  const [pendingId, setPendingId] = useState<string | null>(null);
+  // ====== Per-card pending (per-order) ======
+  const [orderBusy, setOrderBusy] = useState<Record<string, boolean>>({});
+  const setBusy = (id: string, v: boolean) => setOrderBusy((s) => (id ? { ...s, [id]: v } : s));
 
   const [modal, setModal] = useState<{ open: boolean; type: 'reject' | 'cancel' | null; orderId: string | null }>({ open: false, type: null, orderId: null });
   const [reason, setReason] = useState('');
@@ -279,40 +280,30 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
     setSheetOpen(true);
   };
 
-  // Mutations
+  useEffect(() => {
+    // reset busy when closing drawer or changing selected order
+    if (!sheetOpen) setOrderBusy({});
+  }, [sheetOpen]);
+  useEffect(() => {
+    setOrderBusy({});
+  }, [selectedOrder?.id]);
+
+  // Mutations (use mutateAsync + try/finally)
   const approveMut = useMutation({
     mutationFn: (id: string) => OrderService.approveTransfer(id),
-    onSuccess: () => toast.success('Request Approved'),
-    onError: (e: any) => toast.error('Approve failed', { description: e?.message || String(e) }),
-    onSettled: () => setPendingId(null),
   });
   const rejectMut = useMutation({
     mutationFn: (vars: { id: string; reason: string }) => OrderService.rejectTransfer(vars.id, vars.reason),
-    onSuccess: () => toast.success('Request Rejected'),
-    onError: (e: any) => toast.error('Reject failed', { description: e?.message || String(e) }),
-    onSettled: () => setPendingId(null),
   });
   const shipMut = useMutation({
     mutationFn: (id: string) => OrderService.shipTransfer(id),
-    onSuccess: () => toast.success('Marked as Shipped'),
-    onError: (e: any) => toast.error('Ship failed', { description: e?.message || String(e) }),
-    onSettled: () => setPendingId(null),
   });
   const receiveMut = useMutation({
     mutationFn: (id: string) => OrderService.receiveTransfer(id),
-    onSuccess: () => toast.success('Marked as Received'),
-    onError: (e: any) => toast.error('Receive failed', { description: e?.message || String(e) }),
-    onSettled: () => setPendingId(null),
   });
   const cancelMut = useMutation({
     mutationFn: (vars: { id: string; reason: string }) => OrderService.cancelTransfer(vars.id, vars.reason),
-    onSuccess: () => toast.success('Request Cancelled'),
-    onError: (e: any) => toast.error('Cancel failed', { description: e?.message || String(e) }),
-    onSettled: () => setPendingId(null),
   });
-
-  const isAnyPending =
-    approveMut.isPending || rejectMut.isPending || shipMut.isPending || receiveMut.isPending || cancelMut.isPending;
 
   // ====== Filtering helpers ======
   const fitsFilter = (o: Order) => {
@@ -353,7 +344,7 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
   // ====== UI Blocks ======
   const ActionBar = ({ order, role }: { order: Order; role: 'buyer' | 'seller' }) => {
     const s: OrderStatus = order.status;
-    const disabled = isAnyPending && pendingId === order.id;
+    const disabled = !!orderBusy[order.id!];
 
     const Btn = ({ tip, children }: { tip: string; children: React.ReactNode }) => (
       <Tooltip>
@@ -371,9 +362,18 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
             <Btn tip="Approve this request">
               <Button
                 size="sm"
-                onClick={() => {
-                  setPendingId(order.id!);
-                  approveMut.mutate(order.id!);
+                onClick={async () => {
+                  const id = order.id!;
+                  try {
+                    setBusy(id, true);
+                    await approveMut.mutateAsync(id);
+                    toast.success('Request Approved');
+                    if (sheetOpen) setSheetOpen(false);
+                  } catch (e: any) {
+                    toast.error('Approve failed', { description: e?.message || String(e) });
+                  } finally {
+                    setBusy(id, false);
+                  }
                 }}
                 disabled={disabled}
                 className="shadow-sm transition-transform active:scale-95"
@@ -400,9 +400,18 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
           <Btn tip="Mark as shipped (stock will be deducted)">
             <Button
               size="sm"
-              onClick={() => {
-                setPendingId(order.id!);
-                shipMut.mutate(order.id!);
+              onClick={async () => {
+                const id = order.id!;
+                try {
+                  setBusy(id, true);
+                  await shipMut.mutateAsync(id);
+                  toast.success('Marked as Shipped');
+                  if (sheetOpen) setSheetOpen(false);
+                } catch (e: any) {
+                  toast.error('Ship failed', { description: e?.message || String(e) });
+                } finally {
+                  setBusy(id, false);
+                }
               }}
               disabled={disabled}
               className="shadow-sm transition-transform active:scale-95"
@@ -434,9 +443,18 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
           <Btn tip="Confirm goods received (stock will be increased)">
             <Button
               size="sm"
-              onClick={() => {
-                setPendingId(order.id!);
-                receiveMut.mutate(order.id!);
+              onClick={async () => {
+                const id = order.id!;
+                try {
+                  setBusy(id, true);
+                  await receiveMut.mutateAsync(id);
+                  toast.success('Marked as Received');
+                  if (sheetOpen) setSheetOpen(false);
+                } catch (e: any) {
+                  toast.error('Receive failed', { description: e?.message || String(e) });
+                } finally {
+                  setBusy(id, false);
+                }
               }}
               disabled={disabled}
               className="shadow-sm transition-transform active:scale-95"
@@ -493,7 +511,7 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
   const OrderCard = ({ order, role, selected }: { order: Order; role: 'buyer' | 'seller'; selected?: boolean }) => {
     const created = order.createdAt?.toDate?.() ?? new Date();
     const isOpen = !!expandedOrders[order.id!];
-    const isPendingThis = pendingId === order.id && isAnyPending;
+    const isPendingThis = !!orderBusy[order.id!];
 
     return (
       <motion.div
@@ -546,12 +564,10 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
             </div>
           </div>
           <div className="shrink-0 pt-1 flex justify-end">
-            {/* keep action preview small; full actions in sheet */}
             <ChevronDown className="h-4 w-4 opacity-60 group-hover:opacity-100 transition" />
           </div>
         </button>
 
-        {/* (optional) คงปุ่ม View Items เดิมไว้ก็ได้ */}
         <div className="mt-2">
           <Button
             variant="ghost"
@@ -564,7 +580,6 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
           </Button>
         </div>
 
-        {/* legacy inline expand (ซ่อนไว้ แต่ยังเผื่อใช้ได้) */}
         <AnimatePresence initial={false}>
           {isOpen && (
             <motion.div
@@ -818,15 +833,29 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
             <AlertDialogFooter>
               <AlertDialogCancel>Back</AlertDialogCancel>
               <AlertDialogAction
-                onClick={() => {
+                onClick={async () => {
                   if (!reason.trim()) return;
                   if (!modal.orderId || !modal.type) return;
-                  if (modal.type === 'reject') rejectMut.mutate({ id: modal.orderId, reason });
-                  if (modal.type === 'cancel') cancelMut.mutate({ id: modal.orderId, reason });
-                  setModal({ open: false, type: null, orderId: null });
-                  setReason('');
+                  const id = modal.orderId;
+                  try {
+                    setBusy(id, true);
+                    if (modal.type === 'reject') {
+                      await rejectMut.mutateAsync({ id, reason });
+                      toast.success('Request Rejected');
+                    } else {
+                      await cancelMut.mutateAsync({ id, reason });
+                      toast.success('Request Cancelled');
+                    }
+                    setModal({ open: false, type: null, orderId: null });
+                    setReason('');
+                    if (sheetOpen) setSheetOpen(false);
+                  } catch (e: any) {
+                    toast.error(`${modal.type === 'reject' ? 'Reject' : 'Cancel'} failed`, { description: e?.message || String(e) });
+                  } finally {
+                    setBusy(id, false);
+                  }
                 }}
-                disabled={!reason.trim() || isAnyPending}
+                disabled={!reason.trim() || !!(modal.orderId && orderBusy[modal.orderId])}
               >
                 Confirm
               </AlertDialogAction>
@@ -861,7 +890,7 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
                     <div className="flex items-center gap-2">
                       <Calendar className="h-4 w-4" />
                       <span>
-                        Created:{' '}
+                        Created{' '}
                         {format(
                           (selectedOrder.createdAt?.toDate?.() as Date) ?? new Date(),
                           'dd MMM yyyy, HH:mm'
@@ -909,12 +938,9 @@ export default function TransferRequestsView({ myBranchId, myBranchName }: { myB
                 <div className="rounded-xl border p-3">
                   <div className="text-sm font-medium mb-2">Actions</div>
                   <div className="flex flex-wrap gap-2">
-                    {/* reuse ActionBar with role autodetect (if myBranchId === buyer?) */}
                     <ActionBar
                       order={selectedOrder}
-                      role={
-                        selectedOrder.buyerBranchId === myBranchId ? 'buyer' : 'seller'
-                      }
+                      role={selectedOrder.buyerBranchId === myBranchId ? 'buyer' : 'seller'}
                     />
                   </div>
                 </div>
