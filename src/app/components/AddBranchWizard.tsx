@@ -32,7 +32,7 @@ import { Separator } from '@/components/ui/separator';
 import { useBranch } from '@/contexts/BranchContext';
 import { InventoryService, StoreService, slugifyId } from '@/lib/services/InventoryService';
 import { db } from '@/lib/firebase';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, getFirestore } from "firebase/firestore";
 
 // -----------------------------------------------------------------------------
 // AddBranchWizard: Onboarding + CSV Import (Franchise-style)

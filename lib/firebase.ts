@@ -1,7 +1,5 @@
 import { initializeApp, getApps, getApp } from 'firebase/app'
-import {
-  initializeFirestore,
-} from 'firebase/firestore'
+import { getFirestore } from "firebase/firestore";
 import {
   getAuth,
   onAuthStateChanged,
@@ -25,10 +23,7 @@ for (const [k, v] of Object.entries(config)) {
 export const app = getApps().length ? getApp() : initializeApp(config)
 
 // Firestore
-export const db = initializeFirestore(app, {
-  experimentalAutoDetectLongPolling: true,
-  useFetchStreams: false,
-})
+export const db = getFirestore(app)
 
 // 🔐 Auth
 export const auth = getAuth(app)

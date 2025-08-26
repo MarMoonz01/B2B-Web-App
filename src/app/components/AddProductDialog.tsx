@@ -18,17 +18,7 @@ import { Separator } from '@/components/ui/separator';
 import { Card, CardContent } from '@/components/ui/card';
 import { Plus, Trash2, Save, RefreshCw } from 'lucide-react';
 
-import {
-  collection,
-  doc,
-  getDoc,
-  getDocs,
-  addDoc,
-  setDoc,
-  updateDoc,
-  serverTimestamp,
-  query,
-} from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, addDoc, setDoc, updateDoc, serverTimestamp, query, getFirestore } from "firebase/firestore";
 import { db } from '@/lib/firebase';
 
 function slugifyId(s: string): string {

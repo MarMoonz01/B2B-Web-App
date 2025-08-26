@@ -2,16 +2,7 @@
 
 import React, { createContext, useContext, useEffect, useMemo, useState, useCallback } from 'react';
 import { db } from '@/lib/firebase';
-import {
-  collection,
-  query,
-  where,
-  onSnapshot,
-  doc,
-  updateDoc,
-  orderBy,
-  writeBatch, // ✅ FIX: import writeBatch
-} from 'firebase/firestore';
+import { collection, query, where, onSnapshot, doc, updateDoc, orderBy, writeBatch } from "firebase/firestore";
 import { useBranch } from './BranchContext';
 import type { Notification } from '@/lib/services/InventoryService';
 
@@ -63,7 +54,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     return () => unsubscribe();
   }, [selectedBranchId]);
 
-  // ✅ FIX: มีตัวแปร unreadCount จริง
+  
   const unreadCount = useMemo(
     () => notifications.filter((n) => !n.isRead).length,
     [notifications]
@@ -93,7 +84,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     if (unread.length === 0) return;
 
     try {
-      // ✅ FIX: ใช้ writeBatch จริง
+      
       const batch = writeBatch(db);
       unread.forEach((n) => {
         const ref = doc(db, 'notifications', n.id!);

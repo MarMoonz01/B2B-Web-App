@@ -1,66 +1,10 @@
+// ⚠️ DANGER — เปิดอ่าน/เขียนได้ทุกคน แม้ไม่ล็อกอิน
+// ใช้เฉพาะทดสอบชั่วคราว แล้วรีบเปลี่ยนกลับทันที
 rules_version = '2';
 service cloud.firestore {
-  match /databases/{db}/documents {
-
-    function signedIn() {
-      return request.auth != null;
-    }
-
-    // This function requires Document ID to be in uid_branchId_ROLE format
-    function hasRoleIn(branchId) {
-      return signedIn() && (
-        exists(/databases/$(db)/documents/userBranchRoles/$(request.auth.uid + "_" + branchId + "_ADMIN")) ||
-        exists(/databases/$(db)/documents/userBranchRoles/$(request.auth.uid + "_" + branchId + "_SALES"))
-      );
-    }
-
-    // users
-    match /users/{uid} {
-      allow read, write: if signedIn() && uid == request.auth.uid;
-    }
-
-    // This rule allows the app to query for roles upon login
-    match /userBranchRoles/{docId} {
-      allow get: if signedIn() && resource.data.uid == request.auth.uid;
-      allow list: if signedIn() && request.query.where.uid == request.auth.uid;
-      allow create, update, delete: if false;
-    }
-
-    // Other rules...
-    match /stores/{storeId} {
-      allow read, write: if hasRoleIn(storeId);
-      match /inventory/{brandId} {
-        allow read, write: if hasRoleIn(storeId);
-        match /models/{modelId} {
-          allow read, write: if hasRoleIn(storeId);
-          match /variants/{variantId} {
-            allow read, write: if hasRoleIn(storeId);
-            match /dots/{dotCode} {
-              allow read, write: if hasRoleIn(storeId);
-            }
-          }
-        }
-      }
-    }
-    match /orders/{orderId} {
-      allow read: if signedIn() &&
-        (hasRoleIn(resource.data.buyerBranchId) || hasRoleIn(resource.data.sellerBranchId));
-      allow create: if signedIn() && hasRoleIn(request.resource.data.buyerBranchId);
-      allow update: if signedIn() &&
-        (hasRoleIn(resource.data.buyerBranchId) || hasRoleIn(resource.data.sellerBranchId));
-      allow delete: if false;
-    }
-    match /stockMovements/{smId} {
-      allow read:   if signedIn() && hasRoleIn(resource.data.branchId);
-      allow create: if signedIn() && hasRoleIn(request.resource.data.branchId);
-      allow update, delete: if false;
-    }
-    match /notifications/{nId} {
-      allow read:   if signedIn() && hasRoleIn(resource.data.branchId);
-      allow create: if signedIn() && hasRoleIn(request.resource.data.branchId);
-      allow update: if signedIn() &&
-        (hasRoleIn(resource.data.branchId) || hasRoleIn(request.resource.data.branchId));
-      allow delete: if false;
+  match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if true;
     }
   }
 }

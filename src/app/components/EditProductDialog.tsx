@@ -85,7 +85,7 @@ type Props = {
 
 // ---------- data layer ----------
 import { db } from '@/lib/firebase';
-import { doc, updateDoc } from 'firebase/firestore';
+import { doc, updateDoc, getFirestore } from "firebase/firestore";
 
 export default function EditProductDialog({
   open,

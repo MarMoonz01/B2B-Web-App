@@ -1,7 +1,7 @@
 'use client';
 import React from 'react';
 import { auth, db } from '@/lib/firebase';
-import { collection, doc, getDoc, getDocs, limit, query } from 'firebase/firestore';
+import { collection, doc, getDoc, getDocs, limit, query, getFirestore } from "firebase/firestore";
 
 export default function DebugPage() {
   const [out, setOut] = React.useState<string>('running...');
