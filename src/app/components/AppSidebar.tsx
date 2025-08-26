@@ -1,12 +1,12 @@
 'use client';
 
 import React, { useState, useEffect } from 'react';
-import { motion, type Variants } from 'motion/react';
-import { spring } from 'motion';
+import { motion, type Variants } from 'framer-motion';
 import { useRouter, useSearchParams, usePathname } from 'next/navigation';
+import Link from 'next/link';
 import {
   Boxes, ArrowLeftRight, ClipboardList, LineChart, Factory,
-  LayoutGrid, UserRound, Moon, Settings, LogOut, Shield,
+  LayoutGrid, UserRound, Moon, Settings, LogOut, Shield, FileText, Users,
 } from 'lucide-react';
 
 import BranchSelect from '@/src/app/components/BranchSelect';
@@ -41,10 +41,18 @@ function isViewKey(v: string | null): v is ViewKey {
   return !!v && ['inventory','transfer_platform','transfer_requests','analytics','network','debug'].includes(v);
 }
 
-/* ========== animations ========== */
+/* ========== animations (framer-motion) ========== */
 const navItemVariants: Variants = {
-  expanded: { opacity: 1, x: 0, transition: { type: spring, stiffness: 400, damping: 25, mass: 0.6 } },
-  collapsed:{ opacity: 0, x: -8, transition: { duration: 0.15 } },
+  expanded: {
+    opacity: 1,
+    x: 0,
+    transition: { type: 'spring', stiffness: 400, damping: 25, mass: 0.6 },
+  },
+  collapsed: {
+    opacity: 0,
+    x: -8,
+    transition: { duration: 0.15 },
+  },
 };
 
 /* ========== user menus ========== */
@@ -81,7 +89,7 @@ function UserDropdown({ me, org, onSignOut }: { me: Me | null; org?:string; onSi
             <UserRound className="mr-2 h-4 w-4" /> Profile Settings
           </DropdownMenuItem>
           {me?.moderator && (
-            <DropdownMenuItem onClick={() => router.push('/app/admin/roles')}>
+            <DropdownMenuItem onClick={() => router.push('/app/admin/users')}>
               <Shield className="mr-2 h-4 w-4" />
               <span>Admin Panel</span>
             </DropdownMenuItem>
@@ -131,7 +139,7 @@ function UserCollapsedStack({ me, onSignOut }: { me: Me | null; onSignOut: () =>
             <UserRound className="mr-2 h-4 w-4" /> Profile Settings
           </DropdownMenuItem>
           {me?.moderator && (
-            <DropdownMenuItem onClick={() => router.push('/app/admin/roles')}>
+            <DropdownMenuItem onClick={() => router.push('/app/admin/users')}>
               <Shield className="mr-2 h-4 w-4" />
               <span>Admin Panel</span>
             </DropdownMenuItem>
@@ -159,6 +167,7 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
   const collapsed = state === 'collapsed';
 
   const [me, setMe] = useState<Me | null>(null);
+
   useEffect(() => {
     async function fetchSession() {
       try {
@@ -191,7 +200,12 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
   const orgName = selectedBranch?.branchName ?? '...';
 
   return (
-    <Sidebar id="app-sidebar" collapsible="icon" variant="sidebar" className="group/sidebar transition-[width] duration-300 ease-in-out data-[state=expanded]:w-72 data-[state=collapsed]:w-14 overflow-hidden">
+    <Sidebar
+      id="app-sidebar"
+      collapsible="icon"
+      variant="sidebar"
+      className="group/sidebar transition-[width] duration-300 ease-in-out data-[state=expanded]:w-72 data-[state=collapsed]:w-14 overflow-hidden"
+    >
       <SidebarRail />
       <SidebarHeader className="border-b px-2">
         <div className="flex items-center justify-between px-1 py-2">
@@ -204,7 +218,9 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
         <div className="px-1 pb-2 sidebar-label group-data-[state=collapsed]/sidebar:hidden">
           <BranchSelect />
           {selectedBranchId && (
-            <div className="mt-1 text-[10px] text-muted-foreground truncate">Active: <span className="font-medium">{selectedBranchId}</span></div>
+            <div className="mt-1 text-[10px] text-muted-foreground truncate">
+              Active: <span className="font-medium">{selectedBranchId}</span>
+            </div>
           )}
         </div>
       </SidebarHeader>
@@ -218,10 +234,23 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
                 const isActive = active === item.key;
                 return (
                   <SidebarMenuItem key={item.key}>
-                    <motion.div initial={{ opacity: 0, x: -4 }} animate={collapsed ? 'collapsed' : 'expanded'} variants={navItemVariants} transition={{ delay: 0.04 + idx * 0.015 }}>
-                      <SidebarMenuButton isActive={isActive} onClick={() => go(item.key, item.route)} tooltip={item.label} aria-current={isActive ? 'page' : undefined} className="px-3 py-2 group-data-[state=collapsed]/sidebar:justify-center">
+                    <motion.div
+                      initial={{ opacity: 0, x: -4 }}
+                      animate={collapsed ? 'collapsed' : 'expanded'}
+                      variants={navItemVariants}
+                      transition={{ delay: 0.04 + idx * 0.015 }}
+                    >
+                      <SidebarMenuButton
+                        isActive={isActive}
+                        onClick={() => go(item.key, item.route)}
+                        tooltip={item.label}
+                        aria-current={isActive ? 'page' : undefined}
+                        className="px-3 py-2 group-data-[state=collapsed]/sidebar:justify-center"
+                      >
                         <Icon className="h-4 w-4 shrink-0" />
-                        <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">{item.label}</span>
+                        <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">
+                          {item.label}
+                        </span>
                       </SidebarMenuButton>
                     </motion.div>
                   </SidebarMenuItem>
@@ -230,6 +259,61 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
             </SidebarMenu>
           </SidebarGroupContent>
         </SidebarGroup>
+
+        {/* [FIX] Admin Section reverted to static list */}
+        {me?.moderator && (
+          <SidebarGroup className="mt-4 pt-4 border-t">
+            <SidebarGroupLabel className="px-2 py-2 text-xs sidebar-label group-data-[state=collapsed]/sidebar:hidden">
+              Admin Panel
+            </SidebarGroupLabel>
+            <SidebarGroupContent>
+                <SidebarMenu className="space-y-1">
+                    <SidebarMenuItem>
+                        <Link href="/app/admin/applications" className="w-full">
+                            <SidebarMenuButton 
+                                className="px-3 py-2 group-data-[state=collapsed]/sidebar:justify-center"
+                                tooltip="Applications"
+                                isActive={pathname.startsWith('/app/admin/applications')}
+                            >
+                                <FileText className="h-4 w-4 shrink-0" />
+                                <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">
+                                    Applications
+                                </span>
+                            </SidebarMenuButton>
+                        </Link>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <Link href="/app/admin/roles" className="w-full">
+                            <SidebarMenuButton 
+                                className="px-3 py-2 group-data-[state=collapsed]/sidebar:justify-center"
+                                tooltip="Roles"
+                                isActive={pathname.startsWith('/app/admin/roles')}
+                            >
+                                <Shield className="h-4 w-4 shrink-0" />
+                                <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">
+                                    Roles
+                                </span>
+                            </SidebarMenuButton>
+                        </Link>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <Link href="/app/admin/users" className="w-full">
+                            <SidebarMenuButton 
+                                className="px-3 py-2 group-data-[state=collapsed]/sidebar:justify-center"
+                                tooltip="Users"
+                                isActive={pathname.startsWith('/app/admin/users')}
+                            >
+                                <Users className="h-4 w-4 shrink-0" />
+                                <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">
+                                    Users
+                                </span>
+                            </SidebarMenuButton>
+                        </Link>
+                    </SidebarMenuItem>
+                </SidebarMenu>
+            </SidebarGroupContent>
+          </SidebarGroup>
+        )}
       </SidebarContent>
       <SidebarFooter className="border-t px-2">
         <div className="group-data-[state=collapsed]/sidebar:hidden space-y-2 py-2">
@@ -245,7 +329,7 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
             <NotificationBell />
           </div>
           <div className="mt-2 pt-2 border-t text-[9px] opacity-60">
-            <div>Path: {usePathname()}</div>
+            <div>Path: {pathname}</div>
             <div>Active: {active}</div>
           </div>
         </div>
