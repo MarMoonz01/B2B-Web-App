@@ -3,73 +3,90 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    // ========== Helper Functions ==========
     function isSignedIn() {
       return request.auth != null;
     }
 
     function isModerator() {
-      return get(/databases/$(database)/documents/users/$(request.auth.uid)).data.moderator == true;
+      return isSignedIn() &&
+             get(/databases/$(database)/documents/users/$(request.auth.uid)).data.moderator == true;
     }
 
-    // Get user profile data (e.g., roles in branches)
     function getUserProfile(userId) {
       return get(/databases/$(database)/documents/users/$(userId)).data;
     }
 
-    // Check if user has a specific role in a given branch
     function hasRoleInBranch(userId, branchId, role) {
       let profile = getUserProfile(userId);
-      let branches = profile.branches;
-      let matchingBranches = branches.filter(b => b.id == branchId && role in b.roles);
-      return matchingBranches.size() > 0;
-    }
-    
-    // Check if user has permission based on role
-    function can(perm) {
-      // This is a simplified check. In a real app, you'd look up roles/perms.
-      return true; // Placeholder for more complex logic if needed
+      return 'branches' in profile &&
+             profile.branches.filter(b => b.id == branchId && role in b.roles).size() > 0;
     }
 
-    // Check if the request is coming from a "transfer"-related operation
-    // We can identify this by checking for a specific parameter in the request query.
-    // NOTE: This relies on the frontend consistently sending this parameter.
-    function isTransferContext() {
-      // This is a placeholder for a more robust check if possible.
-      // For now, we'll rely on authenticated access for this rule.
-      // A better way would be a custom claim or specific query flag if the client could send one.
-      return isSignedIn();
+    // ========== Branch Applications ==========
+    match /branchApplications/{applicationId} {
+      allow create: if true; // ใครก็ส่งคำขอได้
+      allow read, update, delete: if isModerator();
     }
 
-    // Rules for 'stores' collection (branches)
+    // ========== Stores & Inventory ==========
     match /stores/{branchId} {
-      allow read: if isSignedIn();
+      // อ่านข้อมูล branch ได้ ถ้าเป็น Moderator หรือมี role ใน branch นี้
+      allow read: if isModerator() ||
+                   hasRoleInBranch(request.auth.uid, branchId, 'SALES') ||
+                   hasRoleInBranch(request.auth.uid, branchId, 'ADMIN');
+
+      // เขียน branch ได้เฉพาะ Moderator
       allow write: if isModerator();
 
-      // Rules for 'inventory' subcollection within a store
+      // Subcollection: inventory
       match /inventory/{productId} {
-        // [แก้ไข] เพิ่มเงื่อนไขใหม่ที่นี่
-        // Allow reading inventory from ANY branch IF the user is signed in (for Transfer Platform)
-        // Otherwise, for direct reads (like My Inventory), check for specific branch roles.
-        allow read: if isTransferContext() || hasRoleInBranch(request.auth.uid, branchId, 'SALES') || hasRoleInBranch(request.auth.uid, branchId, 'ADMIN') || isModerator();
-        
-        allow write: if hasRoleInBranch(request.auth.uid, branchId, 'ADMIN') || isModerator();
+        // อ่านได้เฉพาะ Moderator หรือคนที่มี role ใน branch นั้น
+        allow read: if isModerator() ||
+                     hasRoleInBranch(request.auth.uid, branchId, 'SALES') ||
+                     hasRoleInBranch(request.auth.uid, branchId, 'ADMIN');
+
+        // เขียนได้เฉพาะ Admin ของ branch นั้น หรือ Moderator
+        allow write: if isModerator() ||
+                      hasRoleInBranch(request.auth.uid, branchId, 'ADMIN');
+
+        // nested subcollection
+        match /{path=**}/models/{modelId} {
+          allow read: if isModerator() ||
+                       hasRoleInBranch(request.auth.uid, branchId, 'SALES') ||
+                       hasRoleInBranch(request.auth.uid, branchId, 'ADMIN');
+          allow write: if isModerator() ||
+                        hasRoleInBranch(request.auth.uid, branchId, 'ADMIN');
+        }
       }
     }
 
-    // Rules for 'users' collection
+    // ========== Users ==========
     match /users/{userId} {
-      allow read: if isSignedIn() && (request.auth.uid == userId || isModerator());
-      allow write: if isModerator() || request.auth.uid == userId;
+      allow read: if isSignedIn() &&
+                  (request.auth.uid == userId || isModerator());
+      allow write: if isSignedIn() &&
+                   (request.auth.uid == userId || isModerator());
     }
 
-    // Rules for 'orders' collection (transfer requests)
+    // ========== Orders ==========
     match /orders/{orderId} {
-      allow read, write: if isSignedIn();
+      // ต้องการ refine ให้เข้มงวดขึ้น
+      // เบื้องต้น: อนุญาตเฉพาะ Moderator หรือผู้ที่อยู่ branch ที่เกี่ยวข้องกับ order
+      allow read, write: if isModerator() ||
+                         (isSignedIn() &&
+                           (hasRoleInBranch(request.auth.uid, resource.data.fromBranch, 'SALES') ||
+                            hasRoleInBranch(request.auth.uid, resource.data.fromBranch, 'ADMIN') ||
+                            hasRoleInBranch(request.auth.uid, resource.data.toBranch, 'SALES') ||
+                            hasRoleInBranch(request.auth.uid, resource.data.toBranch, 'ADMIN')));
     }
-    
+
+    // ========== Notifications ==========
     match /notifications/{notificationId} {
-      allow read, write: if isSignedIn();
+      // อ่าน/เขียนได้เฉพาะ recipient เอง หรือ moderator
+      allow read, write: if isModerator() ||
+                          (isSignedIn() &&
+                           resource.data.recipientId == request.auth.uid);
     }
   }
 }
