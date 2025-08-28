@@ -3,11 +3,11 @@ import { getAuth } from "firebase-admin/auth";
 import { getFirestore } from "firebase-admin/firestore";
 
 function buildCredential() {
-  // ✅ ถ้ามี GOOGLE_APPLICATION_CREDENTIALS ให้ใช้ ADC ก่อนเลย
+  // ✅ If GOOGLE_APPLICATION_CREDENTIALS is set, use ADC first.
   if (process.env.GOOGLE_APPLICATION_CREDENTIALS) {
     return applicationDefault();
   }
-  // รองรับใส่ทั้ง JSON เป็นสตริง (ไม่จำเป็นถ้าใช้ ADC)
+  // Support for stringified JSON (not needed if using ADC)
   if (process.env.FIREBASE_SERVICE_ACCOUNT) {
     return cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT));
   }
@@ -15,7 +15,7 @@ function buildCredential() {
     const json = JSON.parse(Buffer.from(process.env.FIREBASE_SERVICE_ACCOUNT_BASE64, "base64").toString("utf8"));
     return cert(json);
   }
-  // ทางเลือกสุดท้าย: ชุดแยก 3 ตัว (เสี่ยงฟอร์แมตผิด)
+  // Final option: separate triple env vars (risk of formatting errors)
   if (process.env.FIREBASE_PROJECT_ID && process.env.FIREBASE_CLIENT_EMAIL && process.env.FIREBASE_PRIVATE_KEY) {
     return cert({
       projectId: process.env.FIREBASE_PROJECT_ID,
@@ -23,11 +23,11 @@ function buildCredential() {
       privateKey: process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n"),
     });
   }
-  // ถ้าไม่มีอะไรเลย ให้ใช้ ADC (จะพังชัดๆ ถ้าไม่มีไฟล์)
+  // If nothing else is provided, default to ADC (will fail clearly if no file is found)
   return applicationDefault();
 }
 
-// สำหรับ debug: ดูว่าใช้ credential เส้นทางไหน
+// For debugging: see which credential path was used
 export const CRED_SOURCE =
   process.env.GOOGLE_APPLICATION_CREDENTIALS ? "ADC(GOOGLE_APPLICATION_CREDENTIALS)" :
   process.env.FIREBASE_SERVICE_ACCOUNT ? "SERVICE_ACCOUNT_JSON" :
@@ -38,8 +38,7 @@ let app: App;
 if (!getApps().length) {
   app = initializeApp({
     credential: buildCredential(),
-    // projectId ไม่จำเป็นถ้าไฟล์ JSON มีอยู่แล้ว
-    projectId: process.env.FIREBASE_PROJECT_ID,
+    projectId: process.env.FIREBASE_PROJECT_ID, // Not required if the JSON file already has it
   });
 } else {
   app = getApps()[0]!;

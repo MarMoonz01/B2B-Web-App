@@ -34,11 +34,11 @@ const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<React.
   { key: 'transfer_platform', label: 'Transfer Platform', icon: ArrowLeftRight },
   { key: 'transfer_requests', label: 'Transfer Requests', icon: ClipboardList },
   { key: 'analytics',         label: 'Analytics',         icon: LineChart },
-  { key: 'network',           label: 'Branches',          icon: Factory },
+  // { key: 'network',           label: 'Branches',          icon: Factory }, // REMOVED
 ];
 
 function isViewKey(v: string | null): v is ViewKey {
-  return !!v && ['inventory','transfer_platform','transfer_requests','analytics','network','debug'].includes(v);
+  return !!v && ['inventory','transfer_platform','transfer_requests','analytics','debug'].includes(v); // MODIFIED
 }
 
 /* ========== animations (framer-motion) ========== */
@@ -260,7 +260,6 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
           </SidebarGroupContent>
         </SidebarGroup>
 
-        {/* [FIX] Admin Section reverted to static list */}
         {me?.moderator && (
           <SidebarGroup className="mt-4 pt-4 border-t">
             <SidebarGroupLabel className="px-2 py-2 text-xs sidebar-label group-data-[state=collapsed]/sidebar:hidden">
@@ -278,6 +277,20 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
                                 <FileText className="h-4 w-4 shrink-0" />
                                 <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">
                                     Applications
+                                </span>
+                            </SidebarMenuButton>
+                        </Link>
+                    </SidebarMenuItem>
+                    <SidebarMenuItem>
+                        <Link href="/app/admin/branches" className="w-full">
+                            <SidebarMenuButton
+                                className="px-3 py-2 group-data-[state=collapsed]/sidebar:justify-center"
+                                tooltip="Branches"
+                                isActive={pathname.startsWith('/app/admin/branches')}
+                            >
+                                <Factory className="h-4 w-4 shrink-0" />
+                                <span className="truncate text-sm sidebar-label group-data-[state=collapsed]/sidebar:hidden">
+                                    Branches
                                 </span>
                             </SidebarMenuButton>
                         </Link>

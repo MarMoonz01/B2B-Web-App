@@ -5,5 +5,5 @@ export type ViewKey =
   | 'transfer_requests'
   | 'dashboard'
   | 'analytics'
-  | 'network'
+  // | 'network' // REMOVED
   | 'debug';

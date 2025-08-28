@@ -8,8 +8,8 @@ export async function GET() {
     return NextResponse.json({ ok: false, error: "unauthenticated" }, { status: 401 });
   }
 
-  // [แก้ไข] ไม่ว่าจะเป็น Role ไหนก็ตาม ถ้าล็อกอินแล้ว ให้ดึงข้อมูลทุกสาขา
-  // เพราะหน้านี้ (Transfer Platform) จำเป็นต้องใช้ข้อมูลของทุกสาขา
+  // สำหรับหน้า Transfer Platform เราจำเป็นต้องดึงข้อมูลของทุกสาขา
+  // โดยไม่สนใจ Role ของผู้ใช้ที่ล็อกอินเข้ามา
   const snap = await db.collection("stores").get();
   const branches = snap.docs.map(d => ({ id: d.id, ...(d.data() as any) }));
   

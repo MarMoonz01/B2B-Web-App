@@ -1,452 +1,395 @@
-'use client';
+"use client";
 
-import * as React from 'react';
-import { toast } from 'sonner';
+import React, { useState, useEffect } from 'react';
+import { toast } from "sonner";
+import { PlusCircle, Edit, Trash2, Shield, Check, ChevronsUpDown } from 'lucide-react';
 
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { PERMISSIONS, Permission } from '@/types/permission';
+import { PERMISSION_LABELS } from '@/types/permission-lables'; // <-- 1. Import ป้ายกำกับใหม่
 import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
+import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
+import { Skeleton } from '@/components/ui/skeleton';
 import {
-  AlertDialog,
+  AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent,
+  AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle,
   AlertDialogTrigger,
-  AlertDialogContent,
-  AlertDialogHeader,
-  AlertDialogFooter,
-  AlertDialogTitle,
-  AlertDialogDescription,
-  AlertDialogCancel,
-  AlertDialogAction,
 } from '@/components/ui/alert-dialog';
-import { Copy, Loader2, Search, ShieldMinus, ShieldPlus, ListFilter } from 'lucide-react';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import {
+  Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList
+} from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { cn } from '@/lib/utils';
 
-type Role = 'SALES' | 'ADMIN';
-type RoleRow = { uid: string; branchId: string; role: Role; docId: string };
 
-// ========= helpers =========
-async function fetchJSON<T>(url: string, init?: RequestInit): Promise<T> {
-  const r = await fetch(url, init);
-  const d = await r.json();
-  return d as T;
+// Type Definitions
+interface Branch {
+  id: string;
+  branchName: string;
 }
 
-// ========= page =========
-export default function AdminRolesPage() {
-  // form state
-  const [uid, setUid] = React.useState('');
-  const [email, setEmail] = React.useState('');
-  const [branchId, setBranchId] = React.useState('');
-  const [role, setRole] = React.useState<Role>('SALES');
+interface Role {
+  id: string;
+  name: string;
+  description: string;
+  permissions: Permission[];
+  scope?: 'global' | 'specific';
+  applicableBranches?: string[];
+}
 
-  // data state
-  const [branches, setBranches] = React.useState<string[]>([]);
-  const [rowsAll, setRowsAll] = React.useState<RoleRow[]>([]);
-  const [rowsUser, setRowsUser] = React.useState<RoleRow[]>([]);
 
-  // ui state
-  const [busy, setBusy] = React.useState(false);
-  const [loadingAll, setLoadingAll] = React.useState(true);
-  const [loadingUser, setLoadingUser] = React.useState(false);
-  const [info, setInfo] = React.useState<string>('');
-  const [mode, setMode] = React.useState<'all' | 'user'>('all'); // NEW
+// --- Role Management Component ---
+export default function RolesManagementPage() {
+    const [roles, setRoles] = useState<Role[]>([]);
+    const [isLoading, setIsLoading] = useState(true);
+    const [isDialogOpen, setIsDialogOpen] = useState(false);
+    const [editingRole, setEditingRole] = useState<Role | null>(null);
 
-  // table filters
-  const [q, setQ] = React.useState('');
-  const [fBranch, setFBranch] = React.useState<'all' | string>('all');
-  const [fRole, setFRole] = React.useState<'all' | Role>('all');
-
-  React.useEffect(() => {
-    // branches
-    (async () => {
-      try {
-        const d = await fetchJSON<{ ok: boolean; branches: string[] }>('/api/admin/branches');
-        if (d.ok && Array.isArray(d.branches)) {
-          setBranches(d.branches);
-          if (!branchId && d.branches[0]) setBranchId(d.branches[0]);
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    })();
-
-    // load all assignments initially
-    refreshAllRoles();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ---------- loaders ----------
-  async function resolveUidIfNeeded(): Promise<string> {
-    if (uid.trim()) return uid.trim();
-    if (!email.trim()) throw new Error('กรอก UID หรือ Email อย่างใดอย่างหนึ่ง');
-    const d = await fetchJSON<{ ok: boolean; uid?: string; error?: string }>('/api/admin/users/lookup', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ email: email.trim() }),
-    });
-    if (!d.ok || !d.uid) throw new Error(d.error || 'หา UID จากอีเมลไม่พบ');
-    return String(d.uid);
-  }
-
-  async function refreshUserRoles(targetUid?: string) {
-    const effUid = targetUid ?? (await resolveUidIfNeeded());
-    setLoadingUser(true);
-    try {
-      const d = await fetchJSON<{ ok: boolean; roles?: RoleRow[]; error?: string }>(
-        `/api/admin/roles/list?uid=${encodeURIComponent(effUid)}`
-      );
-      if (d.ok) setRowsUser(d.roles || []);
-      else toast.error(d.error || 'โหลดสิทธิ์ผู้ใช้ล้มเหลว');
-    } finally {
-      setLoadingUser(false);
-    }
-  }
-
-  // พยายามหลาย endpoint เพื่อดึงรายการทั้งหมด (เผื่อ backend ใช้ชื่อไม่เหมือนกัน)
-  async function refreshAllRoles() {
-    setLoadingAll(true);
-    try {
-      const candidates = [
-        '/api/admin/roles/list-all',
-        '/api/admin/roles/listAll',
-        '/api/admin/roles/list?all=1',
-      ];
-      let ok = false;
-      for (const url of candidates) {
+    const fetchRoles = async () => {
+        setIsLoading(true);
         try {
-          const d = await fetchJSON<{ ok: boolean; roles?: RoleRow[] }>(url);
-          if (d?.ok) {
-            setRowsAll(d.roles || []);
-            ok = true;
-            break;
-          }
-        } catch { /* try next */ }
-      }
-      if (!ok) {
-        // สุดท้าย: ถ้าไม่มี endpoint รวม ให้ fallback = ว่าง (ไม่พังหน้า)
-        setRowsAll([]);
-      }
-    } finally {
-      setLoadingAll(false);
-    }
-  }
+            const res = await fetch('/api/admin/roles');
+            const data = await res.json();
+            if (data.ok) {
+                setRoles(data.roles);
+            } else {
+                toast.error("Failed to fetch roles.");
+            }
+        } catch (error) {
+            toast.error("An error occurred while fetching roles.");
+        } finally {
+            setIsLoading(false);
+        }
+    };
 
-  // ---------- actions ----------
-  async function assignRole(e: React.FormEvent) {
-    e.preventDefault();
-    setBusy(true);
-    setInfo('');
-    try {
-      const effUid = await resolveUidIfNeeded();
-      const res = await fetch('/api/admin/roles/assign', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: effUid, branchId, role }),
-      });
-      const d = await res.json();
-      if (!d.ok) throw new Error(d.error || 'Assign role failed');
-      setInfo(`✅ Granted ${role} → ${branchId}`);
-      toast.success(`Granted ${role}`, { description: `${effUid} @ ${branchId}` });
-      await Promise.all([refreshUserRoles(effUid), refreshAllRoles()]);
-      setMode('user');
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      setInfo(`❌ ${msg}`);
-      toast.error(msg);
-    } finally {
-      setBusy(false);
-    }
-  }
+    useEffect(() => {
+        fetchRoles();
+    }, []);
 
-  async function revokeRoleAction(target?: RoleRow) {
-    setBusy(true);
-    setInfo('');
-    try {
-      const effUid = target?.uid ?? (await resolveUidIfNeeded());
-      const effBranch = target?.branchId ?? branchId;
-      const effRole = target?.role ?? role;
+    const handleSave = () => {
+        fetchRoles();
+        setIsDialogOpen(false);
+        setEditingRole(null);
+    };
+    
+    const handleDelete = async (roleId: string) => {
+        try {
+            const res = await fetch(`/api/admin/roles/${roleId}`, { method: 'DELETE' });
+            if (res.ok) {
+                toast.success("Role deleted successfully.");
+                fetchRoles();
+            } else {
+                toast.error("Failed to delete role.");
+            }
+        } catch (error) {
+            toast.error("An error occurred while deleting the role.");
+        }
+    };
 
-      const r = await fetch('/api/admin/roles/revoke', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ uid: effUid, branchId: effBranch, role: effRole }),
-      });
-      const d = await r.json();
-      if (!d.ok) throw new Error(d.error || 'Revoke role failed');
-      setInfo(`✅ Revoked ${effRole} ← ${effBranch}`);
-      toast('Revoked role', { description: `${effUid} @ ${effBranch}` });
-      await Promise.all([refreshUserRoles(effUid), refreshAllRoles()]);
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      setInfo(`❌ ${msg}`);
-      toast.error(msg);
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function onLoadRoles(e: React.FormEvent) {
-    e.preventDefault();
-    setInfo('');
-    try {
-      const effUid = await resolveUidIfNeeded();
-      await refreshUserRoles(effUid);
-      setMode('user');
-    } catch (e: any) {
-      const msg = String(e?.message || e);
-      setInfo(`❌ ${msg}`);
-      toast.error(msg);
-    }
-  }
-
-  // ---------- table computed ----------
-  const dataset = mode === 'all' ? rowsAll : rowsUser;
-  const loading = mode === 'all' ? loadingAll : loadingUser;
-
-  const filteredRows = React.useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    return dataset.filter((r) => {
-      if (fBranch !== 'all' && r.branchId !== fBranch) return false;
-      if (fRole !== 'all' && r.role !== fRole) return false;
-      if (!kw) return true;
-      return (
-        r.uid.toLowerCase().includes(kw) ||
-        r.branchId.toLowerCase().includes(kw) ||
-        r.role.toLowerCase().includes(kw)
-      );
-    });
-  }, [dataset, q, fBranch, fRole]);
-
-  function roleBadge(r: Role) {
-    return r === 'ADMIN'
-      ? <Badge className="bg-emerald-600 hover:bg-emerald-700">ADMIN</Badge>
-      : <Badge className="bg-blue-600 hover:bg-blue-700">SALES</Badge>;
-  }
-
-  return (
-    <div className="max-w-6xl mx-auto space-y-6 p-4">
-      <h1 className="text-2xl font-bold tracking-tight">Admin — จัดการสิทธิ์ผู้ใช้ (RBAC)</h1>
-
-      {/* Grant/Revoke */}
-      <Card className="rounded-2xl">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <ShieldPlus className="h-5 w-5" /> มอบสิทธิ์ / ถอนสิทธิ์
-          </CardTitle>
-          <CardDescription>Moderator เท่านั้นที่เข้าหน้านี้ได้</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <form onSubmit={assignRole} className="space-y-4">
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <Label>UID (ถ้ารู้)</Label>
-                <Input value={uid} onChange={(e) => setUid(e.target.value)} placeholder="เช่น AbC123..." />
-              </div>
-              <div>
-                <Label>Email (ถ้าไม่ทราบ UID)</Label>
-                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} placeholder="user@example.com" />
-                <p className="text-[11px] text-muted-foreground mt-1">* กรอกอย่างใดอย่างหนึ่งก็ได้ (UID หรือ Email)</p>
-              </div>
+    return (
+        <div className="container mx-auto p-6">
+            <div className="flex justify-between items-center mb-6">
+                <h1 className="text-3xl font-bold">Roles & Permissions</h1>
+                <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                    <DialogTrigger asChild>
+                        <Button onClick={() => setEditingRole(null)}>
+                            <PlusCircle className="mr-2 h-4 w-4" /> Add New Role
+                        </Button>
+                    </DialogTrigger>
+                    <DialogContent className="sm:max-w-[625px]">
+                        <RoleForm role={editingRole} onSave={handleSave} />
+                    </DialogContent>
+                </Dialog>
             </div>
-
-            <div className="grid md:grid-cols-2 gap-4">
-              <div>
-                <Label>Branch</Label>
-                <Select value={branchId} onValueChange={setBranchId}>
-                  <SelectTrigger><SelectValue placeholder="เลือกสาขา" /></SelectTrigger>
-                  <SelectContent>
-                    {branches.map((b) => (
-                      <SelectItem key={b} value={b}>{b}</SelectItem>
+            {isLoading ? (
+                <RoleListSkeleton />
+            ) : (
+                <div className="space-y-4">
+                    {roles.map(role => (
+                        <Card key={role.id}>
+                            <CardHeader>
+                                <div className="flex justify-between items-start">
+                                    <div>
+                                        <CardTitle className="flex items-center gap-2 flex-wrap">
+                                            <Shield className="text-primary" /> 
+                                            {role.name}
+                                            <Badge variant={role.scope === 'global' ? 'secondary' : 'default'}>
+                                                {role.scope === 'global' ? 'Global' : 'Specific'}
+                                            </Badge>
+                                        </CardTitle>
+                                        <CardDescription className="mt-1">{role.description}</CardDescription>
+                                    </div>
+                                    <div className="flex gap-2 flex-shrink-0">
+                                        <Button variant="outline" size="icon" onClick={() => { setEditingRole(role); setIsDialogOpen(true); }}>
+                                            <Edit className="h-4 w-4" />
+                                        </Button>
+                                        <AlertDialog>
+                                            <AlertDialogTrigger asChild>
+                                                <Button variant="destructive" size="icon">
+                                                    <Trash2 className="h-4 w-4" />
+                                                </Button>
+                                            </AlertDialogTrigger>
+                                            <AlertDialogContent>
+                                                <AlertDialogHeader>
+                                                    <AlertDialogTitle>Are you sure?</AlertDialogTitle>
+                                                    <AlertDialogDescription>
+                                                        This action cannot be undone. This will permanently delete the role.
+                                                    </AlertDialogDescription>
+                                                </AlertDialogHeader>
+                                                <AlertDialogFooter>
+                                                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                                                    <AlertDialogAction onClick={() => handleDelete(role.id)}>Delete</AlertDialogAction>
+                                                </AlertDialogFooter>
+                                            </AlertDialogContent>
+                                        </AlertDialog>
+                                    </div>
+                                </div>
+                            </CardHeader>
+                            <CardContent>
+                                <h4 className="font-semibold mb-2">Permissions:</h4>
+                                <div className="flex flex-wrap gap-2">
+                                    {role.permissions.length > 0 ? 
+                                     role.permissions.map(p => (
+                                        <Badge key={p} variant="outline">
+                                            {PERMISSION_LABELS[p]?.name || p}
+                                        </Badge>
+                                     )) :
+                                     <span className="text-sm text-muted-foreground">No permissions assigned.</span>}
+                                </div>
+                            </CardContent>
+                        </Card>
                     ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div>
-                <Label>Role</Label>
-                <Select value={role} onValueChange={(v) => setRole(v as Role)}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="SALES">SALES</SelectItem>
-                    <SelectItem value="ADMIN">ADMIN</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-
-            <div className="flex flex-wrap gap-2">
-              <Button type="submit" disabled={busy} className="gap-2">
-                {busy ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldPlus className="h-4 w-4" />}
-                Grant
-              </Button>
-
-              <AlertDialog>
-                <AlertDialogTrigger asChild>
-                  <Button type="button" variant="destructive" disabled={busy} className="gap-2">
-                    <ShieldMinus className="h-4 w-4" /> Revoke
-                  </Button>
-                </AlertDialogTrigger>
-                <AlertDialogContent>
-                  <AlertDialogHeader>
-                    <AlertDialogTitle>ยืนยันการถอนสิทธิ์</AlertDialogTitle>
-                    <AlertDialogDescription>
-                      จะถอนสิทธิ์ {role} จากผู้ใช้นี้ ในสาขา {branchId}
-                    </AlertDialogDescription>
-                  </AlertDialogHeader>
-                  <AlertDialogFooter>
-                    <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
-                    <AlertDialogAction className="bg-red-600 hover:bg-red-700" onClick={() => revokeRoleAction()}>
-                      Confirm
-                    </AlertDialogAction>
-                  </AlertDialogFooter>
-                </AlertDialogContent>
-              </AlertDialog>
-
-              <Button type="button" variant="outline" onClick={onLoadRoles}>
-                โหลดสิทธิ์ของผู้ใช้
-              </Button>
-            </div>
-
-            {info && <p className="text-sm text-muted-foreground">{info}</p>}
-          </form>
-
-          <Separator className="my-4" />
-
-          {/* Header: View Mode + Filters */}
-          <div className="flex flex-wrap items-end gap-3">
-            <div className="inline-flex rounded-lg border bg-white p-1">
-              <Button
-                size="sm"
-                variant={mode === 'all' ? 'default' : 'ghost'}
-                onClick={() => setMode('all')}
-                className="gap-1"
-              >
-                <ListFilter className="h-4 w-4" /> ดูทั้งหมด
-              </Button>
-              <Button
-                size="sm"
-                variant={mode === 'user' ? 'default' : 'ghost'}
-                onClick={() => setMode('user')}
-                className="gap-1"
-              >
-                ผู้ใช้รายบุคคล
-              </Button>
-            </div>
-
-            <div className="w-64">
-              <Label className="text-xs">ค้นหา</Label>
-              <div className="relative mt-1">
-                <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
-                <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="ค้นหา UID / Branch / Role" className="pl-8" />
-              </div>
-            </div>
-            <div className="w-56">
-              <Label className="text-xs">Branch</Label>
-              <Select value={fBranch} onValueChange={(v) => setFBranch(v as any)}>
-                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  {branches.map((b) => <SelectItem key={b} value={b}>{b}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="w-48">
-              <Label className="text-xs">Role</Label>
-              <Select value={fRole} onValueChange={(v) => setFRole(v as any)}>
-                <SelectTrigger className="mt-1"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All</SelectItem>
-                  <SelectItem value="SALES">SALES</SelectItem>
-                  <SelectItem value="ADMIN">ADMIN</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {mode === 'all' && (
-              <Button variant="outline" onClick={refreshAllRoles}>รีเฟรชทั้งหมด</Button>
+                </div>
             )}
-          </div>
+        </div>
+    );
+}
 
-          {/* Roles table */}
-          <div className="rounded-xl border overflow-hidden mt-3">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50">
-                <tr className="text-left">
-                  <th className="px-3 py-2">UID</th>
-                  <th className="px-3 py-2">Branch</th>
-                  <th className="px-3 py-2">Role</th>
-                  <th className="px-3 py-2">Action</th>
-                </tr>
-              </thead>
-              <tbody>
-                {loading ? (
-                  <tr>
-                    <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
-                      <Loader2 className="inline h-4 w-4 animate-spin mr-2" />
-                      {mode === 'all' ? 'Loading all roles…' : 'Loading user roles…'}
-                    </td>
-                  </tr>
-                ) : filteredRows.length === 0 ? (
-                  <tr>
-                    <td colSpan={4} className="px-3 py-6 text-center text-muted-foreground">
-                      {mode === 'all' ? 'ยังไม่มีข้อมูลสิทธิ์ในระบบ' : 'ยังไม่มีข้อมูลสิทธิ์สำหรับผู้ใช้นี้'}
-                    </td>
-                  </tr>
-                ) : (
-                  filteredRows.map((r) => (
-                    <tr key={r.docId} className="border-t">
-                      <td className="px-3 py-2">
-                        <div className="flex items-center gap-2">
-                          <code className="text-xs">{r.uid}</code>
-                          <Button
-                            size="icon"
-                            variant="ghost"
-                            className="h-7 w-7"
-                            onClick={() => navigator.clipboard.writeText(r.uid).then(() => toast('Copied UID'))}
-                          >
-                            <Copy className="h-4 w-4" />
-                          </Button>
+// --- Role Form Component ---
+function RoleForm({ role, onSave }: { role: Role | null, onSave: () => void }) {
+    const [name, setName] = useState(role?.name || '');
+    const [description, setDescription] = useState(role?.description || '');
+    const [selectedPermissions, setSelectedPermissions] = useState<Permission[]>(role?.permissions || []);
+    
+    const [scope, setScope] = useState<'global' | 'specific'>(
+        (role && Array.isArray(role.applicableBranches) && role.applicableBranches.length > 0) ? 'specific' : 'global'
+    );
+    const [applicableBranches, setApplicableBranches] = useState<string[]>(role?.applicableBranches || []);
+    const [allBranches, setAllBranches] = useState<Branch[]>([]);
+    const [openBranchSelector, setOpenBranchSelector] = useState(false);
+    
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    useEffect(() => {
+        async function fetchBranches() {
+            try {
+                const res = await fetch('/api/admin/branches'); 
+                const data = await res.json();
+                if (data.ok) {
+                    setAllBranches(data.branches.map((b: string) => ({ id: b, branchName: b })));
+                }
+            } catch (error) {
+                console.error("Failed to fetch branches", error);
+                toast.error("Could not load branch list.");
+            }
+        }
+        fetchBranches();
+    }, []);
+
+    const handlePermissionChange = (permission: Permission, checked: boolean) => {
+        setSelectedPermissions(prev =>
+            checked ? [...prev, permission] : prev.filter(p => p !== permission)
+        );
+    };
+
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsSubmitting(true);
+        
+        const url = role ? `/api/admin/roles/${role.id}` : '/api/admin/roles';
+        const method = role ? 'PUT' : 'POST';
+
+        const payload = {
+            name,
+            description,
+            permissions: selectedPermissions,
+            scope,
+            applicableBranches: scope === 'specific' ? applicableBranches : [],
+        };
+
+        try {
+            const res = await fetch(url, {
+                method,
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            });
+            if (res.ok) {
+                toast.success(`Role ${role ? 'updated' : 'created'} successfully.`);
+                onSave();
+            } else {
+                toast.error(`Failed to ${role ? 'update' : 'create'} role.`);
+            }
+        } catch (error) {
+            toast.error("An error occurred.");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const selectedBranchNames = applicableBranches
+        .map(id => allBranches.find(b => b.id === id)?.branchName || id)
+        .filter(Boolean)
+        .join(', ');
+
+    return (
+        <form onSubmit={handleSubmit}>
+            <DialogHeader>
+                <DialogTitle>{role ? 'Edit Role' : 'Create New Role'}</DialogTitle>
+            </DialogHeader>
+            <div className="py-4 space-y-4">
+                <Input placeholder="Role Name" value={name} onChange={e => setName(e.target.value)} required />
+                <Textarea placeholder="Role Description" value={description} onChange={e => setDescription(e.target.value)} required />
+                
+                <div className="space-y-2">
+                    <h3 className="font-semibold text-sm">Role Scope</h3>
+                    <RadioGroup value={scope} onValueChange={(value) => setScope(value as any)} className="flex gap-4">
+                        <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="global" id="r1" />
+                            <label htmlFor="r1">Global</label>
                         </div>
-                      </td>
-                      <td className="px-3 py-2">{r.branchId}</td>
-                      <td className="px-3 py-2">
-                        {r.role === 'ADMIN'
-                          ? <Badge className="bg-emerald-600 hover:bg-emerald-700">ADMIN</Badge>
-                          : <Badge className="bg-blue-600 hover:bg-blue-700">SALES</Badge>}
-                      </td>
-                      <td className="px-3 py-2">
-                        <AlertDialog>
-                          <AlertDialogTrigger asChild>
-                            <Button size="sm" variant="destructive">Revoke</Button>
-                          </AlertDialogTrigger>
-                          <AlertDialogContent>
-                            <AlertDialogHeader>
-                              <AlertDialogTitle>ลบสิทธิ์ผู้ใช้?</AlertDialogTitle>
-                              <AlertDialogDescription>
-                                {r.uid} @ {r.branchId} — {r.role}
-                              </AlertDialogDescription>
-                            </AlertDialogHeader>
-                            <AlertDialogFooter>
-                              <AlertDialogCancel>ยกเลิก</AlertDialogCancel>
-                              <AlertDialogAction
-                                className="bg-red-600 hover:bg-red-700"
-                                onClick={() => revokeRoleAction(r)}
-                              >
-                                Confirm
-                              </AlertDialogAction>
-                            </AlertDialogFooter>
-                          </AlertDialogContent>
-                        </AlertDialog>
-                      </td>
-                    </tr>
-                  ))
+                        <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="specific" id="r2" />
+                            <label htmlFor="r2">Specific Branches</label>
+                        </div>
+                    </RadioGroup>
+                </div>
+
+                {scope === 'specific' && (
+                    <div className="space-y-2">
+                        <h3 className="font-semibold text-sm">Applicable Branches</h3>
+                        <Popover open={openBranchSelector} onOpenChange={setOpenBranchSelector}>
+                            <PopoverTrigger asChild>
+                                <Button
+                                    variant="outline"
+                                    role="combobox"
+                                    aria-expanded={openBranchSelector}
+                                    className="w-full justify-between font-normal"
+                                >
+                                    <span className="truncate">
+                                        {applicableBranches.length > 0 ? selectedBranchNames : "Select branches..."}
+                                    </span>
+                                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                </Button>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[300px] p-0">
+                                <Command>
+                                    <CommandInput placeholder="Search branch..." />
+                                    <CommandList>
+                                        <CommandEmpty>No branches found.</CommandEmpty>
+                                        <CommandGroup>
+                                            {allBranches.map((branch) => (
+                                                <CommandItem
+                                                    key={branch.id}
+                                                    value={branch.branchName}
+                                                    onSelect={() => {
+                                                        setApplicableBranches(prev => 
+                                                            prev.includes(branch.id)
+                                                                ? prev.filter(id => id !== branch.id)
+                                                                : [...prev, branch.id]
+                                                        );
+                                                    }}
+                                                >
+                                                    <Check
+                                                        className={cn(
+                                                            "mr-2 h-4 w-4",
+                                                            applicableBranches.includes(branch.id) ? "opacity-100" : "opacity-0"
+                                                        )}
+                                                    />
+                                                    {branch.branchName}
+                                                </CommandItem>
+                                            ))}
+                                        </CommandGroup>
+                                    </CommandList>
+                                </Command>
+                            </PopoverContent>
+                        </Popover>
+                    </div>
                 )}
-              </tbody>
-            </table>
-          </div>
-        </CardContent>
-      </Card>
-    </div>
-  );
+                
+                <h3 className="font-semibold text-sm">Permissions</h3>
+                <TooltipProvider>
+                    <div className="grid grid-cols-2 gap-x-4 gap-y-3 max-h-64 overflow-y-auto p-2 border rounded-md">
+                        {PERMISSIONS.map(p => (
+                            <Tooltip key={p} delayDuration={100}>
+                                <TooltipTrigger asChild>
+                                    <div className="flex items-center gap-2">
+                                        <Checkbox
+                                            id={p}
+                                            checked={selectedPermissions.includes(p)}
+                                            onCheckedChange={(checked) => handlePermissionChange(p, !!checked)}
+                                        />
+                                        <label htmlFor={p} className="text-sm font-medium cursor-pointer">
+                                            {PERMISSION_LABELS[p].name}
+                                        </label>
+                                    </div>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    <p>{PERMISSION_LABELS[p].description}</p>
+                                </TooltipContent>
+                            </Tooltip>
+                        ))}
+                    </div>
+                </TooltipProvider>
+            </div>
+            <div className="flex justify-end gap-2 pt-4 border-t">
+                <Button type="button" variant="ghost" onClick={onSave}>Cancel</Button>
+                <Button type="submit" disabled={isSubmitting}>
+                    {isSubmitting ? 'Saving...' : 'Save Role'}
+                </Button>
+            </div>
+        </form>
+    );
+}
+
+// --- Skeleton Loader ---
+function RoleListSkeleton() {
+    return (
+        <div className="space-y-4">
+            {[...Array(3)].map((_, i) => (
+                <Card key={i}>
+                    <CardHeader>
+                        <div className="flex justify-between items-start">
+                            <div>
+                                <Skeleton className="h-6 w-40 mb-2" />
+                                <Skeleton className="h-4 w-64" />
+                            </div>
+                            <div className="flex gap-2">
+                                <Skeleton className="h-10 w-10" />
+                                <Skeleton className="h-10 w-10" />
+                            </div>
+                        </div>
+                    </CardHeader>
+                    <CardContent>
+                        <Skeleton className="h-5 w-32 mb-2" />
+                        <div className="flex flex-wrap gap-2">
+                            <Skeleton className="h-6 w-24" />
+                            <Skeleton className="h-6 w-32" />
+                            <Skeleton className="h-6 w-28" />
+                        </div>
+                    </CardContent>
+                </Card>
+            ))}
+        </div>
+    );
 }

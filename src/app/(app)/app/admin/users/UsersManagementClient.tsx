@@ -1,304 +1,244 @@
-'use client';
+"use client";
 
-import React, { useState, useEffect, useMemo } from 'react';
-import { useForm } from 'react-hook-form';
-import { PlusCircle, Loader2, RefreshCw, Search, Copy, ShieldAlert } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
 import { toast } from 'sonner';
+import { UserPlus, Edit, PlusCircle } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
+import { Card, CardContent } from '@/components/ui/card';
+import { Dialog, DialogContent, DialogTrigger, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
-import { Separator } from '@/components/ui/separator';
-import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import type { Permission } from '@/types/permission';
+import type { User, UserBranch } from './page';
 
-type User = {
-  uid: string;
-  email: string;
-  displayName?: string;
-  disabled?: boolean;
-  creationTime?: string;
-};
+interface Role {
+    id: string;
+    name: string;
+    description: string;
+    permissions: Permission[];
+    scope?: 'global' | 'specific';
+    applicableBranches?: string[];
+}
 
-type CreateForm = {
-  displayName: string;
-  email: string;
-  password: string;
-};
+// --- Main Client Component ---
+export default function UsersManagementClient({ users: initialUsers }: { users: User[] }) {
+    const [isAddUserOpen, setIsAddUserOpen] = useState(false);
+    const [isEditRolesOpen, setIsEditRolesOpen] = useState(false);
+    const [selectedUser, setSelectedUser] = useState<User | null>(null);
 
-export default function UsersManagementClient() {
-  const [users, setUsers] = useState<User[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const [isCreateUserOpen, setCreateUserOpen] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+    const handleDialogClose = (updated: boolean) => {
+        setIsAddUserOpen(false);
+        setIsEditRolesOpen(false);
+        setSelectedUser(null);
+        if (updated) {
+            window.location.reload();
+        }
+    };
 
-  // toolbar state
-  const [q, setQ] = useState('');
-  const [showOnlyActive, setShowOnlyActive] = useState(true);
-  const [sortBy, setSortBy] = useState<'created' | 'name' | 'email'>('created');
+    const openEditDialog = (user: User) => {
+        setSelectedUser(user);
+        setIsEditRolesOpen(true);
+    };
 
-  // react-hook-form
-  const {
-    register,
-    handleSubmit,
-    reset,
-    formState: { errors },
-  } = useForm<CreateForm>();
-
-  // ------------- data -------------
-  const fetchUsers = async () => {
-    setLoading(true);
-    setErrorMsg(null);
-    try {
-      const res = await fetch('/api/admin/users/list');
-      if (!res.ok) throw new Error('Failed to fetch users');
-      const data = await res.json();
-      // รองรับได้ทั้ง { ok, users } หรือ array กลาย ๆ
-      const arr: User[] = Array.isArray(data) ? data : data?.users ?? [];
-      setUsers(arr);
-    } catch (error) {
-      const description = error instanceof Error ? error.message : 'An unknown error occurred';
-      setErrorMsg(description);
-      toast.error('Error fetching users.', { description });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => {
-    fetchUsers();
-  }, []);
-
-  // ------------- computed -------------
-  const filtered = useMemo(() => {
-    const kw = q.trim().toLowerCase();
-    let list = [...users];
-
-    if (showOnlyActive) list = list.filter(u => !u.disabled);
-
-    if (kw) {
-      list = list.filter(
-        u =>
-          (u.displayName || '').toLowerCase().includes(kw) ||
-          (u.email || '').toLowerCase().includes(kw) ||
-          (u.uid || '').toLowerCase().includes(kw)
-      );
-    }
-
-    list.sort((a, b) => {
-      if (sortBy === 'email') return (a.email || '').localeCompare(b.email || '');
-      if (sortBy === 'name') return (a.displayName || '').localeCompare(b.displayName || '');
-      // created
-      const ta = a.creationTime ? new Date(a.creationTime).getTime() : 0;
-      const tb = b.creationTime ? new Date(b.creationTime).getTime() : 0;
-      return tb - ta; // ใหม่ก่อน
-    });
-
-    return list;
-  }, [users, q, showOnlyActive, sortBy]);
-
-  // ------------- actions -------------
-  const onCreateUser = async (data: CreateForm) => {
-    setIsSubmitting(true);
-    try {
-      const res = await fetch('/api/admin/users/create', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        throw new Error(payload?.error || 'Failed to create user');
-      }
-      toast.success('User created successfully!');
-      reset();
-      setCreateUserOpen(false);
-      fetchUsers(); // refresh
-    } catch (error) {
-      const description = error instanceof Error ? error.message : 'An unknown error occurred';
-      toast.error('Failed to create user.', { description });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  // ------------- UI -------------
-  return (
-    <Card className="rounded-2xl">
-      <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <CardTitle className="text-lg">All Users</CardTitle>
-
-        {/* Toolbar */}
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="relative">
-            <Search className="absolute left-2 top-2.5 h-4 w-4 text-slate-400" />
-            <Input
-              value={q}
-              onChange={(e) => setQ(e.target.value)}
-              placeholder="Search name / email / UID"
-              className="pl-8 w-64"
-            />
-          </div>
-
-          <div className="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-md border bg-white">
-            <span className="text-xs text-slate-600">Active only</span>
-            <Switch checked={showOnlyActive} onCheckedChange={(v) => setShowOnlyActive(Boolean(v))} />
-          </div>
-
-          <div className="flex items-center gap-2">
-            <label className="text-xs text-slate-600">Sort</label>
-            <select
-              value={sortBy}
-              onChange={(e) => setSortBy(e.target.value as any)}
-              className="h-9 rounded-md border bg-white px-2 text-sm"
-            >
-              <option value="created">Newest</option>
-              <option value="name">Name</option>
-              <option value="email">Email</option>
-            </select>
-          </div>
-
-          <Button variant="outline" size="sm" onClick={fetchUsers} className="gap-1">
-            <RefreshCw className="h-3.5 w-3.5" />
-            Refresh
-          </Button>
-
-          <Dialog open={isCreateUserOpen} onOpenChange={setCreateUserOpen}>
-            <DialogTrigger asChild>
-              <Button size="sm" className="gap-1">
-                <PlusCircle className="h-3.5 w-3.5" />
-                <span className="sr-only sm:not-sr-only sm:whitespace-rap">Create User</span>
-              </Button>
-            </DialogTrigger>
-            <DialogContent>
-              <form onSubmit={handleSubmit(onCreateUser)}>
-                <DialogHeader>
-                  <DialogTitle>Create New User</DialogTitle>
-                  <DialogDescription>
-                    Enter the details for the new user. They will be created without any roles.
-                  </DialogDescription>
-                </DialogHeader>
-                <div className="grid gap-4 py-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="displayName">Display Name</Label>
-                    <Input id="displayName" {...register('displayName', { required: true })} />
-                    {errors.displayName && <p className="text-red-500 text-xs">Display name is required.</p>}
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="email">Email</Label>
-                    <Input id="email" type="email" {...register('email', { required: true })} />
-                    {errors.email && <p className="text-red-500 text-xs">Email is required.</p>}
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="password">Password</Label>
-                    <Input id="password" type="password" {...register('password', { required: true, minLength: 6 })} />
-                    {errors.password && <p className="text-red-500 text-xs">Password must be at least 6 characters.</p>}
-                  </div>
+    return (
+        <div className="container mx-auto p-6">
+            <div className="flex justify-between items-center mb-6">
+                <div>
+                    <h1 className="text-3xl font-bold">Users Management</h1>
+                    <p className="text-muted-foreground">Add new users and manage their branch roles.</p>
                 </div>
-                <DialogFooter>
-                  <Button type="button" variant="outline" onClick={() => setCreateUserOpen(false)}>Cancel</Button>
-                  <Button type="submit" disabled={isSubmitting}>
-                    {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Create User
-                  </Button>
-                </DialogFooter>
-              </form>
-            </DialogContent>
-          </Dialog>
+                <Dialog open={isAddUserOpen} onOpenChange={setIsAddUserOpen}>
+                    <DialogTrigger asChild><Button><UserPlus className="mr-2 h-4 w-4" /> Add New User</Button></DialogTrigger>
+                    <DialogContent><AddUserForm onFinished={() => handleDialogClose(true)} /></DialogContent>
+                </Dialog>
+            </div>
+
+            <Card>
+                <CardContent className="p-0">
+                    <div className="overflow-x-auto">
+                        <table className="min-w-full">
+                            <thead className="bg-muted/50">
+                                <tr>
+                                    <th className="p-4 text-left font-semibold">User (Email / UID)</th>
+                                    <th className="p-4 text-left font-semibold">Branch Roles</th>
+                                    <th className="p-4 text-right"></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {initialUsers.map(user => (
+                                    <tr key={user.uid} className="border-b last:border-b-0">
+                                        <td className="p-4 font-medium">
+                                            <div>{user.email || 'N/A'}</div>
+                                            <div className="text-xs text-muted-foreground font-mono">{user.uid}</div>
+                                        </td>
+                                        <td className="p-4">
+                                            <div className="flex flex-col gap-1.5">
+                                            {(user.branches && user.branches.length > 0) ? user.branches.map(b => (
+                                                <div key={b.id} className="text-xs">
+                                                    <Badge variant="secondary" className="mr-2">{b.id}</Badge>
+                                                    <span className="font-semibold">{b.roles.join(', ')}</span>
+                                                </div>
+                                            )) : <span className="text-xs text-muted-foreground">No branch roles assigned</span>}
+                                            </div>
+                                        </td>
+                                        <td className="p-4 text-right">
+                                            {!user.moderator && (
+                                                <Button variant="outline" size="sm" onClick={() => openEditDialog(user)}>
+                                                    <Edit className="h-4 w-4 mr-2"/> Manage Roles
+                                                </Button>
+                                            )}
+                                        </td>
+                                    </tr>
+                                ))}
+                            </tbody>
+                        </table>
+                    </div>
+                </CardContent>
+            </Card>
+
+            <Dialog open={isEditRolesOpen} onOpenChange={setIsEditRolesOpen}>
+                <DialogContent>
+                    {selectedUser && <EditRolesForm user={selectedUser} onFinished={() => handleDialogClose(true)} />}
+                </DialogContent>
+            </Dialog>
         </div>
-      </CardHeader>
+    );
+}
 
-      <CardContent>
-        {/* error banner */}
-        {errorMsg && (
-          <div className="mb-3 flex items-center gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-900">
-            <ShieldAlert className="h-4 w-4" />
-            {errorMsg}
-          </div>
-        )}
+// --- Add User Form Component ---
+function AddUserForm({ onFinished }: { onFinished: () => void }) {
+    const [email, setEmail] = useState('');
+    const [password, setPassword] = useState('');
+    const [isSubmitting, setIsSubmitting] = useState(false);
 
-        <Separator className="mb-3" />
+    const handleSubmit = async (e: React.FormEvent) => {
+        e.preventDefault();
+        setIsSubmitting(true);
+        try {
+            const res = await fetch('/api/admin/users/create', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ email, password }),
+            });
+            const data = await res.json();
+            if (res.ok && data.ok) {
+                toast.success('User created successfully!');
+                onFinished();
+            } else {
+                toast.error(data.error || 'Failed to create user.');
+            }
+        } catch (error) {
+            toast.error('An unexpected error occurred.');
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
 
-        {loading ? (
-          <div className="flex items-center justify-center gap-2 p-10 text-muted-foreground">
-            <Loader2 className="h-4 w-4 animate-spin" />
-            Loading users...
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="p-10 text-center text-sm text-muted-foreground">
-            No users found.
-          </div>
-        ) : (
-          <div className="rounded-xl border overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-slate-50">
-                  <TableHead>Display Name</TableHead>
-                  <TableHead>Email</TableHead>
-                  <TableHead>UID</TableHead>
-                  <TableHead>Created At</TableHead>
-                  <TableHead>Status</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.map((user) => (
-                  <TableRow key={user.uid} className="border-t">
-                    <TableCell className="font-medium">{user.displayName || 'N/A'}</TableCell>
-                    <TableCell>{user.email}</TableCell>
-                    <TableCell>
-                      <div className="flex items-center gap-2">
-                        <code className="text-xs">{user.uid}</code>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7"
-                          onClick={() => navigator.clipboard.writeText(user.uid).then(() => toast('Copied UID'))}
-                        >
-                          <Copy className="h-4 w-4" />
-                        </Button>
-                      </div>
-                    </TableCell>
-                    <TableCell>
-                      {user.creationTime ? new Date(user.creationTime).toLocaleDateString() : '—'}
-                    </TableCell>
-                    <TableCell>
-                      {user.disabled ? (
-                        <Badge variant="secondary" className="bg-slate-200 text-slate-700">Disabled</Badge>
-                      ) : (
-                        <Badge className="bg-emerald-600 hover:bg-emerald-700">Active</Badge>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
-        )}
+    return (
+        <form onSubmit={handleSubmit} className="space-y-4 pt-4">
+            <DialogHeader>
+                <DialogTitle>Create New User</DialogTitle>
+                <DialogDescription>
+                    This will create an account in Firebase Authentication and a user document in Firestore.
+                </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+                <Input type="email" placeholder="Email" value={email} onChange={e => setEmail(e.target.value)} required />
+                <Input type="password" placeholder="Password" value={password} onChange={e => setPassword(e.target.value)} required />
+            </div>
+            <Button type="submit" disabled={isSubmitting}>{isSubmitting ? 'Creating...' : 'Create User'}</Button>
+        </form>
+    );
+}
 
-        {/* footer info */}
-        <div className="mt-3 text-xs text-muted-foreground">
-          Showing {filtered.length} of {users.length} user{users.length !== 1 ? 's' : ''}.
+// --- Edit Roles Form Component ---
+function EditRolesForm({ user, onFinished }: { user: User, onFinished: () => void }) {
+    const [roles, setRoles] = useState<Role[]>([]);
+    const [branches, setBranches] = useState<{id: string, branchName: string}[]>([]);
+    const [newAssignment, setNewAssignment] = useState({ branchId: '', role: '' });
+    const [isSubmitting, setIsSubmitting] = useState(false);
+
+    useEffect(() => {
+        async function fetchData() {
+            const rolesRes = await fetch('/api/admin/roles');
+            const rolesData = await rolesRes.json();
+            if (rolesData.ok) setRoles(rolesData.roles);
+            
+            const branchesRes = await fetch('/api/admin/branches');
+            const branchesData = await branchesRes.json();
+            if (branchesData.ok) {
+                const branchDetails = branchesData.branches.map((b: string) => ({id: b, branchName: b}));
+                setBranches(branchDetails);
+            }
+        }
+        fetchData();
+    }, []);
+    
+    const handleAddAssignment = async () => {
+        if (!newAssignment.branchId || !newAssignment.role) {
+            toast.error("Please select both a branch and a role.");
+            return;
+        }
+        setIsSubmitting(true);
+        try {
+             const res = await fetch(`/api/admin/users/${user.uid}/roles`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newAssignment),
+            });
+            if (!res.ok) throw new Error("Failed to save assignment");
+            toast.success(`Role '${newAssignment.role}' assigned to branch ${newAssignment.branchId}!`);
+            onFinished();
+        } catch (error) {
+             toast.error("An error occurred while saving.");
+        } finally {
+            setIsSubmitting(false);
+        }
+    };
+
+    const unassignedBranches = branches.filter(b => !(user.branches || []).some(ub => ub.id === b.id));
+
+    return (
+        <div className="space-y-4">
+            <DialogHeader>
+                <DialogTitle>Manage Roles for</DialogTitle>
+                <DialogDescription>{user.email}</DialogDescription>
+            </DialogHeader>
+            
+            <div className="space-y-2">
+                <p className="text-sm font-medium">Current Assignments</p>
+                <div className="space-y-2 p-3 border rounded-lg max-h-24 overflow-y-auto">
+                    {(user.branches && user.branches.length > 0) ? user.branches.map(b => (
+                         <div key={b.id} className="text-sm flex justify-between items-center">
+                            <span><Badge variant="secondary">{b.id}</Badge></span>
+                            <span className="font-semibold">{b.roles.join(', ')}</span>
+                        </div>
+                    )) : <p className="text-xs text-muted-foreground">No current assignments.</p>}
+                </div>
+            </div>
+
+            <div className="space-y-2 pt-4 border-t">
+                 <p className="text-sm font-medium">Add New Assignment</p>
+                 <div className="flex items-center gap-2">
+                     <Select value={newAssignment.branchId} onValueChange={val => setNewAssignment(p => ({...p, branchId: val, role: ''}))}>
+                         <SelectTrigger><SelectValue placeholder="Select Branch" /></SelectTrigger>
+                         <SelectContent>
+                             {unassignedBranches.map(b => <SelectItem key={b.id} value={b.id}>{b.branchName}</SelectItem>)}
+                         </SelectContent>
+                     </Select>
+                     <Select value={newAssignment.role} onValueChange={val => setNewAssignment(p => ({...p, role: val}))} disabled={!newAssignment.branchId}>
+                         <SelectTrigger><SelectValue placeholder="Select Role" /></SelectTrigger>
+                         <SelectContent>
+                             {roles.filter(r => r.scope === 'global' || r.applicableBranches?.includes(newAssignment.branchId)).map(r => <SelectItem key={r.id} value={r.name}>{r.name}</SelectItem>)}
+                         </SelectContent>
+                     </Select>
+                     <Button size="icon" onClick={handleAddAssignment} disabled={isSubmitting}>
+                         <PlusCircle className="h-4 w-4" />
+                     </Button>
+                 </div>
+            </div>
         </div>
-      </CardContent>
-    </Card>
-  );
+    );
 }
