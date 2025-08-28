@@ -1,4 +1,3 @@
-// src/components/BranchSelect.tsx (หรือพาธที่คุณวางอยู่)
 'use client';
 
 import * as React from 'react';
@@ -21,28 +20,67 @@ import { cn } from '@/lib/utils';
 
 type VisibleBranch = { id: string; branchName?: string; name?: string; isActive?: boolean };
 
-export default function BranchSelect() {
+export default function BranchSelect({
+  allowedBranchIds,
+}: {
+  allowedBranchIds?: string[];
+}) {
   const qc = useQueryClient();
   const { selectedBranchId, setSelectedBranchId } = useBranch();
   const [open, setOpen] = React.useState(false);
 
-  // ดึงสาขาที่ผู้ใช้ "มองเห็นได้" ผ่าน API (ไม่ชน Firestore rules)
+  // ใช้ใน queryKey เพื่อให้ refetch เมื่อสิทธิเปลี่ยน (เช่นโหลด me เสร็จ)
+  const allowKey = React.useMemo(
+    () =>
+      allowedBranchIds && allowedBranchIds.length
+        ? [...allowedBranchIds].sort().join('|')
+        : 'none',
+    [allowedBranchIds]
+  );
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ['stores'],
+    queryKey: ['branches', 'scoped', allowKey],
     queryFn: async (): Promise<Record<string, string>> => {
-      const r = await fetch('/api/branches/visible', { cache: 'no-store' });
-      const d = await r.json();
-      if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
-      const out: Record<string, string> = {};
-      (d.branches as VisibleBranch[]).forEach((b) => {
-        out[b.id] = (b.branchName || b.name || b.id).toString();
-      });
-      return out;
+      const toRecord = (arr: VisibleBranch[] | undefined) => {
+        const out: Record<string, string> = {};
+        (arr ?? []).forEach((b) => {
+          if (typeof b.isActive === 'boolean' && !b.isActive) return;
+          out[b.id] = (b.branchName || b.name || b.id).toString();
+        });
+        return out;
+      };
+
+      // 1) ลอง /list ก่อน (ควรเป็นรายการที่ backend กรองตามสิทธิแล้ว)
+      const rList = await fetch('/api/branches/list', { cache: 'no-store' }).catch(() => null);
+      if (rList) {
+        try {
+          const d = await rList.json();
+          if (rList.ok && d?.ok && Array.isArray(d.branches) && d.branches.length > 0) {
+            return toRecord(d.branches as VisibleBranch[]);
+          }
+        } catch {
+          // noop; จะไปใช้ fallback
+        }
+      }
+
+      // 2) fallback -> /visible (ต้องมี allowedBranchIds เพื่อกรอง)
+      const rVis = await fetch('/api/branches/visible', { cache: 'no-store' });
+      const dVis = await rVis.json();
+      if (!rVis.ok || !dVis?.ok) throw new Error(dVis?.error || `HTTP ${rVis.status}`);
+
+      const allVisible: VisibleBranch[] = Array.isArray(dVis.branches) ? dVis.branches : [];
+      if (!allowedBranchIds || allowedBranchIds.length === 0) {
+        // เพื่อความปลอดภัย: ถ้าไม่รู้สิทธิที่แน่ชัด อย่าโชว์อะไรเลย
+        return {};
+      }
+      const allow = new Set(allowedBranchIds);
+      const filtered = allVisible.filter((b) => allow.has(b.id));
+      return toRecord(filtered);
     },
     staleTime: 5 * 60_000,
   });
 
-  const items = React.useMemo(
+  const rawItems = React.useMemo(
     () =>
       Object.entries(data ?? {}).map(([id, name]) => ({
         id,
@@ -51,19 +89,40 @@ export default function BranchSelect() {
     [data]
   );
 
-  // ตั้งค่า default ถ้ายังไม่เคยเลือก
+  // intersect อีกชั้น (กันกรณี fallback มาจาก /visible)
+  const items = React.useMemo(() => {
+    if (!allowedBranchIds || allowedBranchIds.length === 0) return rawItems;
+    const allow = new Set(allowedBranchIds);
+    return rawItems.filter((b) => allow.has(b.id));
+  }, [rawItems, allowedBranchIds]);
+
+  // ตั้งค่า default หรือ auto-correct ถ้าค่าเดิมไม่มีสิทธิแล้ว
   React.useEffect(() => {
-    if (!isLoading && items.length && !selectedBranchId) {
-      const saved = typeof window !== 'undefined' ? localStorage.getItem('selectedBranchId') : null;
-      const pick = saved && items.find((b) => b.id === saved) ? saved : items[0].id;
-      setSelectedBranchId(pick);
+    if (isLoading) return;
+    if (!items.length) return;
+
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('selectedBranchId') : null;
+    const hasSaved = saved && items.some((b) => b.id === saved);
+
+    if (!selectedBranchId || !items.some((b) => b.id === selectedBranchId)) {
+      const next = (hasSaved ? (saved as string) : items[0].id) as string;
+      setSelectedBranchId(next);
+      if (typeof window !== 'undefined') localStorage.setItem('selectedBranchId', next);
     }
   }, [isLoading, items, selectedBranchId, setSelectedBranchId]);
 
-  const currentName =
-    items.find((x) => x.id === selectedBranchId)?.name || 'Select branch';
+  const currentName = items.find((x) => x.id === selectedBranchId)?.name || 'Select branch';
 
   const choose = (id: string) => {
+    // กันผู้ใช้เลือกสาขาที่ไม่มีสิทธิ
+    if (allowedBranchIds && allowedBranchIds.length > 0 && !allowedBranchIds.includes(id)) {
+      console.warn('Forbidden branchId selected:', id);
+      return;
+    }
+    if (!items.some((b) => b.id === id)) {
+      console.warn('BranchId not in fetched list:', id);
+      return;
+    }
     setSelectedBranchId(id);
     if (typeof window !== 'undefined') localStorage.setItem('selectedBranchId', id);
     setOpen(false);
@@ -79,9 +138,7 @@ export default function BranchSelect() {
         <Button variant="outline" className="w-full justify-between" aria-label="Select branch">
           <span className="flex items-center gap-2">
             <Building2 className="h-4 w-4" />
-            <span className="truncate">
-              {error ? 'Error loading branches' : currentName}
-            </span>
+            <span className="truncate">{error ? 'Error loading branches' : currentName}</span>
           </span>
           <ChevronsUpDown className="h-4 w-4 opacity-60" />
         </Button>
@@ -96,7 +153,7 @@ export default function BranchSelect() {
             ) : (
               <>
                 <CommandEmpty>No branches found.</CommandEmpty>
-                <CommandGroup heading="All Branches">
+                <CommandGroup heading="My Branches">
                   {items.map((b) => (
                     <CommandItem
                       key={b.id}

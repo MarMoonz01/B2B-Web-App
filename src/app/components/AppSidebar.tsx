@@ -34,11 +34,10 @@ const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<React.
   { key: 'transfer_platform', label: 'Transfer Platform', icon: ArrowLeftRight },
   { key: 'transfer_requests', label: 'Transfer Requests', icon: ClipboardList },
   { key: 'analytics',         label: 'Analytics',         icon: LineChart },
-  // { key: 'network',           label: 'Branches',          icon: Factory }, // REMOVED
 ];
 
 function isViewKey(v: string | null): v is ViewKey {
-  return !!v && ['inventory','transfer_platform','transfer_requests','analytics','debug'].includes(v); // MODIFIED
+  return !!v && ['inventory','transfer_platform','transfer_requests','analytics','debug'].includes(v);
 }
 
 /* ========== animations (framer-motion) ========== */
@@ -59,7 +58,7 @@ const navItemVariants: Variants = {
 function UserDropdown({ me, org, onSignOut }: { me: Me | null; org?:string; onSignOut: () => void }) {
   const router = useRouter();
   const name = me?.email ?? 'User';
-  const userRole = me?.moderator ? 'Admin' : me?.branches?.find(b => b.id === me.selectedBranchId)?.roles?.[0] ?? 'User';
+  const userRole = me?.moderator ? 'Admin' : me?.branches?.find((b: any) => (b?.id ?? b) === me?.selectedBranchId)?.roles?.[0] ?? 'User';
   const initials = name?.split(' ').map(w=>w[0]).join('').slice(0,2).toUpperCase() || 'U';
 
   return (
@@ -171,7 +170,7 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
   useEffect(() => {
     async function fetchSession() {
       try {
-        const res = await fetch('/api/debug/session');
+        const res = await fetch('/api/debug/session'); // ใช้ endpoint เดิมของคุณ
         if (res.ok) {
           const sessionData = await res.json();
           setMe(sessionData);
@@ -182,6 +181,12 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
     }
     fetchSession();
   }, []);
+
+  // ✅ ดึง branchId ที่อนุญาตจาก me.branches (รองรับได้ทั้ง array ของ string หรือ {id,...})
+  const allowedBranchIds = React.useMemo<string[]>(
+    () => (me?.branches ?? []).map((b: any) => (typeof b === 'string' ? b : b?.id)).filter(Boolean),
+    [me]
+  );
 
   const viewFromQuery = search?.get('view');
   const active: ViewKey = currentView ?? (isViewKey(viewFromQuery) ? (viewFromQuery as ViewKey) : 'inventory');
@@ -216,7 +221,8 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
           <SidebarTrigger />
         </div>
         <div className="px-1 pb-2 sidebar-label group-data-[state=collapsed]/sidebar:hidden">
-          <BranchSelect />
+          {/* ✅ ส่ง allowedBranchIds เข้า BranchSelect */}
+          <BranchSelect allowedBranchIds={allowedBranchIds} />
           {selectedBranchId && (
             <div className="mt-1 text-[10px] text-muted-foreground truncate">
               Active: <span className="font-medium">{selectedBranchId}</span>
