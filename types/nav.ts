@@ -1,9 +1,12 @@
 // types/nav.ts
-export type ViewKey =
-  | 'inventory'
-  | 'transfer_platform'
-  | 'transfer_requests'
-  | 'dashboard'
-  | 'analytics'
-  // | 'network' // REMOVED
-  | 'debug';
+export const VIEW_KEYS = [
+  'overview',
+  'inventory',
+  'transfer_platform',
+  'transfer_requests',
+  'dashboard',
+  'analytics',
+  'debug',
+] as const;
+
+export type ViewKey = typeof VIEW_KEYS[number];

@@ -139,8 +139,7 @@ type Row = {
   branchNode: any;
 };
 
-type ViewKey = 'inventory' | 'transfer_platform' | 'transfer_requests' | 'dashboard' | 'network' | 'analytics' | 'debug';
-
+import type { ViewKey } from '@/types/nav';
 
 export default function MyInventory({
   myBranchId,
@@ -1390,8 +1389,7 @@ export default function MyInventory({
                     {r.noDot && <NoDotBadge />}
                   </div>
                   <CardHeader className="pb-2">
-                    <CardTitle className="text.base pr-24 flex items-center justify-between">
-                      <span className="truncate">{r.productName}</span>
+                      <CardTitle className="text-base pr-24 flex items-center justify-between">                      <span className="truncate">{r.productName}</span>
                       <Button size="icon" variant="ghost" onClick={() => handleOpenEditProduct(r)} title="Edit product" className="transition-transform active:scale-95">
                         <Pencil className="h-4 w-4" />
                       </Button>
@@ -1602,8 +1600,7 @@ export default function MyInventory({
                               className="grid items-stretch"
                               style={{ gridTemplateColumns: `200px repeat(${dots.length}, minmax(100px, 1fr)) 120px` }}
                             >
-                              <div className="px-3 py-2 text-sm font-medium border bg:white">
-                                {spec}
+                               <div className="px-3 py-2 text-sm font-medium border bg-white">                                {spec}
                               </div>
                               {dots.map((dc) => {
                                 const cell = cellMap.get(`${spec}__${dc}`);

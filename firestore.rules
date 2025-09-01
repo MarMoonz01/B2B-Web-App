@@ -3,83 +3,229 @@ rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
 
-    // Helper functions
+    /* ============== Helpers ============== */
+
     function isSignedIn() {
       return request.auth != null;
     }
 
+    // อ่านข้อมูล users/{uid} เพื่อดูสถานะ moderator
+    function userData(uid) {
+      return get(/databases/$(database)/documents/users/$(uid)).data;
+    }
+
+    // moderator จาก custom token หรือจาก users/{uid}.moderator
     function isModerator() {
-      // Ensure user document and moderator field exist before checking
-      return isSignedIn() && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.moderator == true;
+      return isSignedIn() && (
+        request.auth.token.moderator == true ||
+        (userData(request.auth.uid).moderator == true)
+      );
     }
 
-    // Get user profile data (e.g., roles in branches)
-    function getUserProfile(userId) {
-      return get(/databases/$(database)/documents/users/$(userId)).data;
+    // ---- Legacy roles โดยอิงคอลเลกชัน userBranchRoles ----
+    // เอกสารถูกตั้งชื่อเป็น: {uid}_{branchId}_{ROLE}
+    function hasRoleInBranch(uid, branchId, role) {
+      return exists(
+        /databases/$(database)/documents/userBranchRoles/$(uid + "_" + branchId + "_" + role)
+      );
     }
 
-    // Check if user has a specific role in a given branch
-    function hasRoleInBranch(userId, branchId, role) {
-      let profile = getUserProfile(userId);
-      // Check for existence of branches field before trying to access it
-      return 'branches' in profile && profile.branches.filter(b => b.id == branchId && role in b.roles).size() > 0;
-    }
-    
-    // Check if the request is coming from a "transfer"-related operation
-    function isTransferContext() {
-      return isSignedIn();
+    function isBranchAdmin(uid, branchId) {
+      return isModerator() || hasRoleInBranch(uid, branchId, "ADMIN");
     }
 
-    // [NEW] Rules for 'branchApplications' collection
-    match /branchApplications/{applicationId} {
-      // Anyone can create an application to join.
-      allow create: if true;
-      
-      // Only moderators can read, update (approve/reject), or delete applications.
-      allow read, update, delete: if isModerator();
+    function isBranchSales(uid, branchId) {
+      return isBranchAdmin(uid, branchId) || hasRoleInBranch(uid, branchId, "SALES");
     }
 
-    // [REVISED] Rules for 'stores' collection (branches)
-    match /stores/{branchId} {
-      // Any signed-in user can read store/branch information.
+    function isBranchViewer(uid, branchId) {
+      return isBranchAdmin(uid, branchId)
+          || hasRoleInBranch(uid, branchId, "SALES")
+          || hasRoleInBranch(uid, branchId, "VIEWER")
+          || hasRoleInBranch(uid, branchId, "USER");
+    }
+
+    // order เกี่ยวข้องสาขาไหนบ้าง
+    function canViewOrder(uid) {
+      return (
+        (('branchId' in resource.data)      && isBranchViewer(uid, resource.data.branchId)) ||
+        (('buyerBranchId' in resource.data) && isBranchViewer(uid, resource.data.buyerBranchId)) ||
+        (('sellerBranchId' in resource.data)&& isBranchViewer(uid, resource.data.sellerBranchId))
+      );
+    }
+
+    // transfer เกี่ยวข้องสาขาไหนบ้าง (รองรับ involvedBranches[0..1])
+    function canViewTransfer(uid) {
+      let base =
+        (('fromBranchId' in resource.data) && isBranchViewer(uid, resource.data.fromBranchId)) ||
+        (('toBranchId' in resource.data)   && isBranchViewer(uid, resource.data.toBranchId));
+
+      let hasInv = 'involvedBranches' in resource.data;
+      let n      = hasInv ? resource.data.involvedBranches.size() : 0;
+      let br0    = (n >= 1) && isBranchViewer(uid, resource.data.involvedBranches[0]);
+      let br1    = (n >= 2) && isBranchViewer(uid, resource.data.involvedBranches[1]);
+
+      return base || (hasInv && (br0 || br1));
+    }
+
+    /* ============== roles / userBranchRoles ============== */
+
+    match /roles/{roleId} {
       allow read: if isSignedIn();
-      
-      // ONLY moderators can create, update, or delete stores.
-      allow write: if isModerator();
+      // จัดการ role ได้เฉพาะ moderator
+      allow create, update, delete: if isModerator();
+    }
 
-      // Rules for 'inventory' subcollection within a store
-      match /inventory/{productId} {
-        allow read: if isTransferContext() || hasRoleInBranch(request.auth.uid, branchId, 'SALES') || hasRoleInBranch(request.auth.uid, branchId, 'ADMIN') || isModerator();
-        allow write: if hasRoleInBranch(request.auth.uid, branchId, 'ADMIN') || isModerator();
-        
-        // Rules for nested subcollections in inventory
-        match /{path=**}/models/{modelId} {
-           allow read: if isTransferContext() || hasRoleInBranch(request.auth.uid, branchId, 'SALES') || hasRoleInBranch(request.auth.uid, branchId, 'ADMIN') || isModerator();
-           allow write: if hasRoleInBranch(request.auth.uid, branchId, 'ADMIN') || isModerator();
+    // เก็บประวัติการ assign/remove แบบ audit log
+    match /userBranchRoles/{docId} {
+      allow read: if isSignedIn() && (
+        isModerator() ||
+        (resource.data.uid == request.auth.uid) ||
+        (('branchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.branchId))
+      );
+
+      // เขียนผ่านเซิร์ฟเวอร์ – แต่ให้ moderator หรือแอดมินสาขาทำได้
+      allow create: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in request.resource.data) &&
+         isBranchAdmin(request.auth.uid, request.resource.data.branchId))
+      );
+
+      allow update: if false; // ไม่แก้ย้อนหลัง
+      allow delete: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.branchId))
+      );
+    }
+
+    /* ======================= users ======================= */
+
+    match /users/{userId} {
+      // เจ้าของอ่าน/แก้ได้ หรือ moderator
+      allow read:  if isSignedIn() && (request.auth.uid == userId || isModerator());
+      allow write: if isSignedIn() && (request.auth.uid == userId || isModerator());
+    }
+
+    /* =============== stores & inventory =============== */
+    // ✅ เปิดให้อ่านสต็อก "ทุกสาขา" ได้เมื่อ login (เพื่อให้ Transfer Platform ทำงานข้ามสาขา)
+    //    เขียน/ลบ จำกัดที่แอดมินสาขา/ม็อด
+
+    match /stores/{branchId} {
+      allow read:  if isSignedIn();
+      allow write: if isModerator(); // ฟิลด์ระดับสาขา
+
+      match /inventory/{brandId} {
+        allow read:  if isSignedIn(); // สำคัญสำหรับ Transfer Platform
+        allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+
+        match /models/{modelId} {
+          allow read:  if isSignedIn();
+          allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+
+          match /variants/{variantId} {
+            allow read:  if isSignedIn();
+            allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+
+            match /dots/{dotCode} {
+              allow read:  if isSignedIn();
+              allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+            }
+          }
+        }
+
+        // fallback ภายใต้ inventory/*
+        match /{any=**} {
+          allow read:  if isSignedIn();
+          allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
         }
       }
     }
 
-    // Rules for 'users' collection
-    match /users/{userId} {
-      // Users can read their own profile. Moderators can read any profile.
-      allow read: if isSignedIn() && (request.auth.uid == userId || isModerator());
-      
-      // Users can update their own profile. Moderators can update any profile.
-      allow write: if isSignedIn() && (request.auth.uid == userId || isModerator());
+    /* ======================== orders ======================== */
+
+    match /orders/{orderId} {
+      // create: อนุญาตเฉพาะคนขายสาขานั้น ๆ หรือ moderator
+      allow create: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in request.resource.data) &&
+         isBranchSales(request.auth.uid, request.resource.data.branchId))
+      );
+
+      // read: สมาชิกสาขาที่เกี่ยวข้อง หรือ moderator
+      allow read: if isSignedIn() && (isModerator() || canViewOrder(request.auth.uid));
+
+      // update: แอดมินสาขาที่เกี่ยวข้อง หรือ moderator
+      allow update: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in resource.data)      && isBranchAdmin(request.auth.uid, resource.data.branchId)) ||
+        (('buyerBranchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.buyerBranchId)) ||
+        (('sellerBranchId' in resource.data)&& isBranchAdmin(request.auth.uid, resource.data.sellerBranchId))
+      );
+
+      allow delete: if isModerator();
     }
 
-    // Rules for 'orders' collection (transfer requests)
-    match /orders/{orderId} {
-      // For now, any signed-in user can read/write. 
-      // This should be refined later to check if the user is part of the order (from/to branch).
-      allow read, write: if isSignedIn();
+    /* ======================= transfers ======================= */
+
+    match /transfers/{transferId} {
+      // create: อนุญาตผู้มีสิทธิ์ขายของสาขาต้น/ปลาย หรือใน involvedBranches หรือ moderator
+      allow create: if isSignedIn() && (
+        isModerator() ||
+        (('fromBranchId' in request.resource.data) && isBranchSales(request.auth.uid, request.resource.data.fromBranchId)) ||
+        (('toBranchId' in request.resource.data)   && isBranchSales(request.auth.uid, request.resource.data.toBranchId))   ||
+        (('involvedBranches' in request.resource.data) &&
+         (
+           ((request.resource.data.involvedBranches.size() >= 1) && isBranchSales(request.auth.uid, request.resource.data.involvedBranches[0])) ||
+           ((request.resource.data.involvedBranches.size() >= 2) && isBranchSales(request.auth.uid, request.resource.data.involvedBranches[1]))
+         )
+        )
+      );
+
+      // read: สมาชิกสาขาที่เกี่ยวข้อง หรือ moderator
+      allow read: if isSignedIn() && (isModerator() || canViewTransfer(request.auth.uid));
+
+      // update: แอดมินสาขาที่เกี่ยวข้อง หรือ moderator
+      allow update: if isSignedIn() && (
+        isModerator() ||
+        (('fromBranchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.fromBranchId)) ||
+        (('toBranchId' in resource.data)   && isBranchAdmin(request.auth.uid, resource.data.toBranchId))   ||
+        (('involvedBranches' in resource.data) &&
+         (
+           ((resource.data.involvedBranches.size() >= 1) && isBranchAdmin(request.auth.uid, resource.data.involvedBranches[0])) ||
+           ((resource.data.involvedBranches.size() >= 2) && isBranchAdmin(request.auth.uid, resource.data.involvedBranches[1]))
+         )
+        )
+      );
+
+      allow delete: if isModerator();
     }
-    
-    // Rules for 'notifications' collection
-    match /notifications/{notificationId} {
-      // This should be refined to check if the user is the recipient of the notification.
-      allow read, write: if isSignedIn();
+
+    /* ===================== notifications ===================== */
+
+    match /notifications/{notifId} {
+      allow read, update:
+        if isSignedIn() && (isModerator() || isBranchViewer(request.auth.uid, resource.data.branchId));
+      // สร้างแนะนำให้ผ่าน server (moderator เท่านั้น)
+      allow create: if isSignedIn() && isModerator();
+      allow delete: if isModerator();
+    }
+
+    /* ===================== stockMovements ===================== */
+
+    match /stockMovements/{moveId} {
+      allow read: if isSignedIn() && (isModerator() || isBranchViewer(request.auth.uid, resource.data.branchId));
+      allow create: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in request.resource.data) && isBranchAdmin(request.auth.uid, request.resource.data.branchId))
+      );
+      allow update, delete: if false;
+    }
+
+    /* ===================== branchApplications ===================== */
+
+    match /branchApplications/{appId} {
+      allow create: if true;              // ฟอร์มสมัครสาขา
+      allow read, update, delete: if isModerator();
     }
   }
 }

@@ -14,22 +14,29 @@ import {
   Bar,
   PieChart,
   Pie,
+  Legend,
   Cell,
 } from 'recharts';
+import { motion } from 'framer-motion';
 import {
-  Card,
-  CardContent,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
+  PackageSearch,
+  Boxes,
+  ArrowDownUp,
+  Building2,
+  AlertTriangle,
+  TrendingUp,
+  Truck,
+  Factory,
+  Clock,
+  Users,
+} from 'lucide-react';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Select, SelectTrigger, SelectContent, SelectItem, SelectValue } from '@/components/ui/select';
-import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { useBranch } from '@/contexts/BranchContext';
-import { cn } from '@/lib/utils';
-import { Download, RefreshCcw, Info, Building2, CalendarDays, BarChart3, Activity, PieChart as PieIcon } from 'lucide-react';
 
 // ----------------------------------
 // Types (match existing /api/analytics/summary)
@@ -41,90 +48,34 @@ interface SummaryData {
   totalUsers: number;
 }
 
-interface ChartData {
-  name: string; // label on axis or legend
-  value?: number; // generic numeric value
-  transfers?: number; // for series named 'transfers'
-}
+interface ChartData { name: string; value: number; [k: string]: any }
 
 interface SummaryResponse {
   ok: boolean;
   summaryData: SummaryData;
   inventoryByBranchData: ChartData[];
-  transfersOverTimeData: ChartData[];
+  transfersOverTimeData: { name: string; inbound?: number; outbound?: number }[];
   productCategoriesData: ChartData[];
 }
 
 // ----------------------------------
-// Helpers
+// Formatting helpers
 // ----------------------------------
 const FORMAT_THB = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 });
 const FORMAT_NUM = new Intl.NumberFormat('th-TH');
-
 const PIE_COLORS = ['#4f46e5', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#84cc16'];
-
-type RangePreset = '7d' | '30d' | '90d' | 'ytd';
-
-function rangePresetToDates(preset: RangePreset): { from: string; to: string } {
-  const now = new Date();
-  const to = new Date(Date.UTC(now.getFullYear(), now.getMonth(), now.getDate()));
-  let from = new Date(to);
-  if (preset === '7d') from.setUTCDate(to.getUTCDate() - 6);
-  if (preset === '30d') from.setUTCDate(to.getUTCDate() - 29);
-  if (preset === '90d') from.setUTCDate(to.getUTCDate() - 89);
-  if (preset === 'ytd') from = new Date(Date.UTC(to.getUTCFullYear(), 0, 1));
-  // return as ISO (date-only)
-  const iso = (d: Date) => d.toISOString().slice(0, 10);
-  return { from: iso(from), to: iso(to) };
-}
-
-// Small utility to CSV-export any 2D array
-function downloadCSV(filename: string, rows: Array<Record<string, any>> | Array<any[]>) {
-  let csv = '';
-  if (Array.isArray(rows) && rows.length > 0 && !Array.isArray(rows[0])) {
-    // rows of objects -> header first
-    const keys = Object.keys(rows[0] as Record<string, any>);
-    csv += keys.join(',') + '\n';
-    (rows as Array<Record<string, any>>).forEach((r) => {
-      csv += keys.map((k) => JSON.stringify(r[k] ?? '')).join(',') + '\n';
-    });
-  } else {
-    (rows as any[][]).forEach((r) => {
-      csv += r.map((v) => JSON.stringify(v ?? '')).join(',') + '\n';
-    });
-  }
-  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement('a');
-  link.href = url;
-  link.setAttribute('download', filename);
-  document.body.appendChild(link);
-  link.click();
-  document.body.removeChild(link);
-  URL.revokeObjectURL(url);
-}
 
 // ----------------------------------
 // Component
 // ----------------------------------
-export default function AnalyticsView() {
-  const { selectedBranchId, selectedBranch } = useBranch();
+export default function analyticview() {
+  const [range, setRange] = React.useState<'7d'|'30d'|'90d'|'ytd'>('30d');
+  const [search, setSearch] = React.useState('');
 
-  // Filters
-  const [preset, setPreset] = React.useState<RangePreset>('30d');
-  const { from, to } = React.useMemo(() => rangePresetToDates(preset), [preset]);
-  const [scope, setScope] = React.useState<'branch' | 'all'>('branch');
-
-  // Data fetching
-  const queryKey = React.useMemo(() => ['analytics-summary', scope, selectedBranchId || 'none', from, to], [scope, selectedBranchId, from, to]);
-
-  const { data, isLoading, isFetching, error, refetch } = useQuery<SummaryResponse>({
-    queryKey,
+  const { data, isLoading, isError, refetch } = useQuery<SummaryResponse>({
+    queryKey: ['analytics-summary', range],
     queryFn: async () => {
-      const params = new URLSearchParams();
-      if (scope === 'branch' && selectedBranchId) params.set('branchId', selectedBranchId);
-      params.set('from', from);
-      params.set('to', to);
+      const params = new URLSearchParams({ range });
       const r = await fetch(`/api/analytics/summary?${params.toString()}`, { cache: 'no-store' });
       const d = await r.json();
       if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
@@ -139,219 +90,226 @@ export default function AnalyticsView() {
   const transfersSeries = data?.transfersOverTimeData ?? [];
   const pieCats = data?.productCategoriesData ?? [];
 
-  // ----------------------------------
-  // UI
-  // ----------------------------------
   return (
-    <div className="p-4 md:p-6 space-y-4">
-      {/* Toolbar */}
-      <Card>
-        <CardContent className="py-4">
-          <div className="flex flex-col md:flex-row md:items-center gap-3">
-            <div className="flex items-center gap-2">
-              <BarChart3 className="h-5 w-5" />
-              <div className="font-semibold">Enterprise Analytics</div>
-              <TooltipProvider>
-                <Tooltip>
-                  <TooltipTrigger asChild>
-                    <button aria-label="Info" className="inline-flex"><Info className="h-4 w-4 text-muted-foreground" /></button>
-                  </TooltipTrigger>
-                  <TooltipContent>Scoped by branch or all branches you can access.</TooltipContent>
-                </Tooltip>
-              </TooltipProvider>
-            </div>
-
-            <div className="flex-1" />
-
-            {/* Scope select */}
-            <div className="flex items-center gap-2">
-              <Building2 className="h-4 w-4 text-muted-foreground" />
-              <Select value={scope} onValueChange={(v) => setScope(v as 'branch' | 'all')}>
-                <SelectTrigger className="w-[180px]">
-                  <SelectValue placeholder="Scope" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="branch">Selected Branch{selectedBranch ? `: ${selectedBranch.branchName ?? selectedBranch.id}` : ''}</SelectItem>
-                  <SelectItem value="all">All My Branches</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {/* Date presets */}
-            <div className="flex items-center gap-2">
-              <CalendarDays className="h-4 w-4 text-muted-foreground" />
-              <Select value={preset} onValueChange={(v) => setPreset(v as RangePreset)}>
-                <SelectTrigger className="w-[160px]">
-                  <SelectValue placeholder="Range" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="7d">Last 7 days</SelectItem>
-                  <SelectItem value="30d">Last 30 days</SelectItem>
-                  <SelectItem value="90d">Last 90 days</SelectItem>
-                  <SelectItem value="ytd">Year to date</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="flex items-center gap-2">
-              <Button variant="secondary" size="sm" onClick={() => refetch()} disabled={isFetching}>
-                <RefreshCcw className={cn('h-4 w-4 mr-2', isFetching && 'animate-spin')} /> Refresh
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => {
-                  const rows = [
-                    { metric: 'totalInventoryValue', value: summary?.totalInventoryValue ?? 0 },
-                    { metric: 'pendingTransfers', value: summary?.pendingTransfers ?? 0 },
-                    { metric: 'branchCount', value: summary?.branchCount ?? 0 },
-                    { metric: 'totalUsers', value: summary?.totalUsers ?? 0 },
-                  ];
-                  downloadCSV('analytics-summary.csv', rows);
-                }}
-              >
-                <Download className="h-4 w-4 mr-2" /> Export CSV
-              </Button>
-            </div>
+    <div className="min-h-[100dvh] w-full p-4 md:p-6 lg:p-8">
+      {/* Header */}
+      <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div className="flex items-center gap-3">
+          <PackageSearch className="h-7 w-7" />
+          <div>
+            <h1 className="text-2xl font-semibold leading-tight">Inventory Analytics</h1>
+            <p className="text-sm text-muted-foreground">ภาพรวมสต็อก • ช่วงเวลา {range.toUpperCase()}</p>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* KPI Cards */}
-      {isLoading ? (
-        <KPISkeleton />
-      ) : error ? (
-        <ErrorCard message={(error as Error).message} />
-      ) : (
-        <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-          <KPICard title="Inventory Value" value={FORMAT_THB.format(summary?.totalInventoryValue ?? 0)} sub="Total across scope" />
-          <KPICard title="Pending Transfers" value={FORMAT_NUM.format(summary?.pendingTransfers ?? 0)} sub="Open requests" />
-          <KPICard title="Branches" value={FORMAT_NUM.format(summary?.branchCount ?? 0)} sub="In scope" />
-          <KPICard title="Active Users" value={FORMAT_NUM.format(summary?.totalUsers ?? 0)} sub="In last 30 days" />
         </div>
-      )}
+        <div className="flex flex-1 flex-col gap-3 md:flex-row md:items-center md:justify-end">
+          <div className="flex w-full max-w-md items-center gap-2">
+            <Input placeholder="ค้นหา SKU / ชื่อสินค้า" value={search} onChange={(e)=>setSearch(e.target.value)} />
+            <Select value={range} onValueChange={(v:any)=>setRange(v)}>
+              <SelectTrigger className="w-[120px]"><SelectValue placeholder="ช่วงเวลา" /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="7d">7 วัน</SelectItem>
+                <SelectItem value="30d">30 วัน</SelectItem>
+                <SelectItem value="90d">90 วัน</SelectItem>
+                <SelectItem value="ytd">ตั้งแต่ต้นปี</SelectItem>
+              </SelectContent>
+            </Select>
+            <Button variant="outline" onClick={()=>refetch()}>รีเฟรช</Button>
+          </div>
+        </div>
+      </div>
 
-      {/* Charts */}
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
-        <Card className="xl:col-span-3">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><Activity className="h-5 w-5" /> Transfers over time</CardTitle>
+      {/* KPI Row */}
+      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>มูลค่าสต็อกรวม</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-2xl">
+              {isLoading ? <Skeleton className="h-7 w-32" /> : FORMAT_THB.format(summary?.totalInventoryValue ?? 0)}
+            </CardTitle>
           </CardHeader>
-          <CardContent className="h-[320px]">
-            {isLoading ? (
-              <Skeleton className="h-full" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={transfersSeries} margin={{ left: 4, right: 4, top: 8, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <ReTooltip formatter={(v: any) => FORMAT_NUM.format(v)} />
-                  <Line type="monotone" dataKey="transfers" stroke="#4f46e5" strokeWidth={2} dot={false} />
-                </LineChart>
-              </ResponsiveContainer>
-            )}
-          </CardContent>
+          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><TrendingUp className="h-4 w-4" /> ค่าประมาณ ณ ปัจจุบัน</CardContent>
         </Card>
 
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>คำขอโอนสินค้ารออนุมัติ</CardDescription>
+            <CardTitle className="text-2xl">
+              {isLoading ? <Skeleton className="h-7 w-12" /> : FORMAT_NUM.format(summary?.pendingTransfers ?? 0)}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><Truck className="h-4 w-4" /> โอนระหว่างสาขา</CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>จำนวนสาขา</CardDescription>
+            <CardTitle className="flex items-center gap-2 text-2xl">
+              {isLoading ? <Skeleton className="h-7 w-10" /> : FORMAT_NUM.format(summary?.branchCount ?? 0)}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><Building2 className="h-4 w-4" /> Branches</CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-2">
+            <CardDescription>ผู้ใช้งาน</CardDescription>
+            <CardTitle className="text-2xl">
+              {isLoading ? <Skeleton className="h-7 w-10" /> : FORMAT_NUM.format(summary?.totalUsers ?? 0)}
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><Users className="h-4 w-4" /> รวมทั้งหมด</CardContent>
+        </Card>
+      </div>
+
+      {/* Main Grid */}
+      <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
+        {/* Left: Charts */}
+        <div className="xl:col-span-2 space-y-4">
+          <Card>
+            <CardHeader className="pb-0">
+              <CardTitle className="text-xl flex items-center gap-2"><Boxes className="h-5 w-5" /> มูลค่าคงคลังตามสาขา</CardTitle>
+              <CardDescription>รวมมูลค่าสินค้าต่อสาขา</CardDescription>
+            </CardHeader>
+            <CardContent className="pt-4 h-[340px]">
+              {isLoading ? (
+                <Skeleton className="h-full" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={invByBranch} margin={{ left: 4, right: 4, top: 8, bottom: 40 }}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" angle={-20} textAnchor="end" interval={0} height={60} tick={{ fontSize: 12 }} />
+                    <YAxis tick={{ fontSize: 12 }} />
+                    <ReTooltip />
+                    <Bar dataKey="value" radius={[6,6,0,0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-0">
+              <CardTitle className="text-xl flex items-center gap-2"><ArrowDownUp className="h-5 w-5" /> Inbound / Outbound</CardTitle>
+              <CardDescription>ปริมาณเคลื่อนไหวสินค้า ({range.toUpperCase()})</CardDescription>
+            </CardHeader>
+            <CardContent className="pt-4 h-[300px]">
+              {isLoading ? (
+                <Skeleton className="h-full" />
+              ) : (
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={transfersSeries}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="name" />
+                    <YAxis />
+                    <ReTooltip />
+                    <Line type="monotone" dataKey="inbound" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="outbound" strokeWidth={2} dot={false} />
+                    <Legend />
+                  </LineChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Right: Categories Pie + Low Stock */}
+        <div className="space-y-4">
+          <Card>
+            <CardHeader className="pb-0">
+              <CardTitle className="text-xl flex items-center gap-2"><Factory className="h-5 w-5" /> สัดส่วนตามหมวดสินค้า</CardTitle>
+              <CardDescription>ค่าประมาณจากคลังสินค้า</CardDescription>
+            </CardHeader>
+            <CardContent className="pt-4 h-[300px]">
+              {isLoading ? (
+                <Skeleton className="h-full" />
+              ) : (
+                <ResponsiveContainer>
+                  <PieChart>
+                    <Pie data={pieCats} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90}>
+                      {pieCats.map((_, i) => (
+                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                      ))}
+                    </Pie>
+                    <Legend />
+                  </PieChart>
+                </ResponsiveContainer>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-2">
+              <CardTitle className="text-xl flex items-center gap-2"><AlertTriangle className="h-5 w-5" /> สินค้าใกล้หมด</CardTitle>
+              <CardDescription>Top 5 ตามเกณฑ์ minQty (placeholder)</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {[{ sku:'SKU-001', name:'ตัวอย่างสินค้า A', qty:3, min:5 },{ sku:'SKU-014', name:'ตัวอย่างสินค้า B', qty:7, min:10 },{ sku:'SKU-221', name:'ตัวอย่างสินค้า C', qty:1, min:4 }].map((r)=> (
+                <div key={r.sku} className="flex items-center justify-between rounded-xl border p-3">
+                  <div>
+                    <div className="font-medium">{r.sku} <span className="text-muted-foreground">— {r.name}</span></div>
+                    <div className="text-xs text-muted-foreground">คงเหลือ {r.qty} / เกณฑ์ขั้นต่ำ {r.min}</div>
+                  </div>
+                  <Badge variant="destructive">เติมสต็อก</Badge>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+
+      {/* Tables & Insights */}
+      <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
         <Card className="xl:col-span-2">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><PieIcon className="h-5 w-5" /> Inventory by category</CardTitle>
+          <CardHeader className="pb-0">
+            <CardTitle className="text-xl flex items-center gap-2"><Boxes className="h-5 w-5" /> SKU เคลื่อนไหวสูงสุด</CardTitle>
+            <CardDescription>Top movers by transfer volume (placeholder)</CardDescription>
           </CardHeader>
-          <CardContent className="h-[320px]">
-            {isLoading ? (
-              <Skeleton className="h-full" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie data={pieCats} dataKey="value" nameKey="name" outerRadius={100} innerRadius={60}>
-                    {pieCats.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={PIE_COLORS[index % PIE_COLORS.length]} />
-                    ))}
-                  </Pie>
-                  <ReTooltip formatter={(v: any) => FORMAT_NUM.format(v)} />
-                </PieChart>
-              </ResponsiveContainer>
-            )}
+          <CardContent className="pt-4 overflow-x-auto">
+            <table className="min-w-[640px] w-full text-sm">
+              <thead>
+                <tr className="text-left text-muted-foreground">
+                  <th className="px-2 py-2 font-medium">SKU</th>
+                  <th className="px-2 py-2 font-medium">ชื่อสินค้า</th>
+                  <th className="px-2 py-2 font-medium">Inbound</th>
+                  <th className="px-2 py-2 font-medium">Outbound</th>
+                  <th className="px-2 py-2 font-medium">สาขาหลัก</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[{sku:'SKU-001', name:'ตัวอย่างสินค้า A', in:120, out:95, branch:'สาขา 1'}, {sku:'SKU-014', name:'ตัวอย่างสินค้า B', in:90, out:110, branch:'สาขา 3'}, {sku:'SKU-221', name:'ตัวอย่างสินค้า C', in:60, out:70, branch:'สาขา 2'}].map((r)=> (
+                  <tr key={r.sku} className="border-t">
+                    <td className="px-2 py-2 font-medium">{r.sku}</td>
+                    <td className="px-2 py-2">{r.name}</td>
+                    <td className="px-2 py-2">{FORMAT_NUM.format(r.in)}</td>
+                    <td className="px-2 py-2">{FORMAT_NUM.format(r.out)}</td>
+                    <td className="px-2 py-2">{r.branch}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </CardContent>
         </Card>
 
-        <Card className="xl:col-span-5">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2"><BarChart3 className="h-5 w-5" /> Inventory value by branch</CardTitle>
+        <Card>
+          <CardHeader className="pb-0">
+            <CardTitle className="text-xl flex items-center gap-2"><Clock className="h-5 w-5" /> สต็อกค้าง (Aging)</CardTitle>
+            <CardDescription>กลุ่มที่เกิน 90/180 วัน (placeholder)</CardDescription>
           </CardHeader>
-          <CardContent className="h-[360px]">
-            {isLoading ? (
-              <Skeleton className="h-full" />
-            ) : (
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={invByBranch} margin={{ left: 4, right: 4, top: 8, bottom: 40 }}>
-                  <CartesianGrid strokeDasharray="3 3" />
-                  <XAxis dataKey="name" angle={-20} textAnchor="end" interval={0} height={60} tick={{ fontSize: 12 }} />
-                  <YAxis tick={{ fontSize: 12 }} />
-                  <ReTooltip formatter={(v: any) => FORMAT_THB.format(v)} />
-                  <Bar dataKey="value" fill="#22c55e" radius={[4, 4, 0, 0]} />
-                </BarChart>
-              </ResponsiveContainer>
-            )}
+          <CardContent className="pt-4 space-y-3">
+            {[{ bucket:'>180 วัน', items:24, value: 410000 }, { bucket:'90–180 วัน', items:52, value: 690000 }].map((r)=> (
+              <div key={r.bucket} className="flex items-center justify-between rounded-xl border p-3">
+                <div>
+                  <div className="font-medium">{r.bucket}</div>
+                  <div className="text-xs text-muted-foreground">{FORMAT_NUM.format(r.items)} รายการ • {FORMAT_THB.format(r.value)}</div>
+                </div>
+                <Button variant="ghost" size="sm">ดูรายการ</Button>
+              </div>
+            ))}
           </CardContent>
         </Card>
       </div>
 
-      {/* Footer Note */}
-      <div className="text-[11px] text-muted-foreground px-1">
-        Scope: <span className="font-medium">{scope === 'all' ? 'All my branches' : (selectedBranch?.branchName ?? selectedBranchId ?? '-')}</span>
-        <Separator orientation="vertical" className="mx-2 inline-block h-3 align-middle" />
-        Range: <span className="font-medium">{from} → {to}</span>
-      </div>
+      <p className="mt-6 text-center text-xs text-muted-foreground">Tip: หน้านี้ดึงข้อมูลจาก <code>/api/analytics/summary</code> และสามารถผูก Low Stock / Movers / Aging กับคิวรีจริงได้ภายหลัง</p>
     </div>
-  );
-}
-
-// ----------------------------------
-// Sub-components
-// ----------------------------------
-function KPICard({ title, value, sub }: { title: string; value: string; sub?: string }) {
-  return (
-    <Card>
-      <CardHeader>
-        <CardTitle className="text-sm text-muted-foreground">{title}</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-semibold">{value}</div>
-        {sub && <div className="text-xs text-muted-foreground mt-1">{sub}</div>}
-      </CardContent>
-    </Card>
-  );
-}
-
-function KPISkeleton() {
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        <Skeleton className="h-28" />
-        <Skeleton className="h-28" />
-        <Skeleton className="h-28" />
-        <Skeleton className="h-28" />
-      </div>
-      <div className="grid grid-cols-1 xl:grid-cols-5 gap-4">
-        <Skeleton className="xl:col-span-3 h-80" />
-        <Skeleton className="xl:col-span-2 h-80" />
-        <Skeleton className="xl:col-span-5 h-96" />
-      </div>
-    </div>
-  );
-}
-
-function ErrorCard({ message }: { message: string }) {
-  return (
-    <Card className="border-destructive">
-      <CardHeader>
-        <CardTitle className="text-destructive">Failed to load analytics</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <div className="text-sm text-muted-foreground">{message}</div>
-      </CardContent>
-    </Card>
   );
 }

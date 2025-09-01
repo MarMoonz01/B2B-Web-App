@@ -29,15 +29,18 @@ import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 
 type AppSidebarProps = { currentView?: ViewKey; onNavigate?: (k: ViewKey) => void; };
 
+// 1. เพิ่ม 'Overview' เข้าไปเป็นรายการแรก
 const NAV: Array<{ key: ViewKey; label: string; icon: React.ComponentType<React.SVGProps<SVGSVGElement>>; route?: string; }> = [
+  { key: 'overview',          label: 'Overview',          icon: LayoutGrid },
   { key: 'inventory',         label: 'My Inventory',      icon: Boxes },
   { key: 'transfer_platform', label: 'Transfer Platform', icon: ArrowLeftRight },
   { key: 'transfer_requests', label: 'Transfer Requests', icon: ClipboardList },
   { key: 'analytics',         label: 'Analytics',         icon: LineChart },
 ];
 
+// 2. อัปเดตฟังก์ชัน isViewKey ให้รองรับ 'overview'
 function isViewKey(v: string | null): v is ViewKey {
-  return !!v && ['inventory','transfer_platform','transfer_requests','analytics','debug'].includes(v);
+  return !!v && ['overview', 'inventory','transfer_platform','transfer_requests','analytics','debug'].includes(v);
 }
 
 /* ========== animations (framer-motion) ========== */
@@ -170,7 +173,7 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
   useEffect(() => {
     async function fetchSession() {
       try {
-        const res = await fetch('/api/debug/session'); // ใช้ endpoint เดิมของคุณ
+        const res = await fetch('/api/debug/session');
         if (res.ok) {
           const sessionData = await res.json();
           setMe(sessionData);
@@ -182,14 +185,14 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
     fetchSession();
   }, []);
 
-  // ✅ ดึง branchId ที่อนุญาตจาก me.branches (รองรับได้ทั้ง array ของ string หรือ {id,...})
   const allowedBranchIds = React.useMemo<string[]>(
     () => (me?.branches ?? []).map((b: any) => (typeof b === 'string' ? b : b?.id)).filter(Boolean),
     [me]
   );
 
   const viewFromQuery = search?.get('view');
-  const active: ViewKey = currentView ?? (isViewKey(viewFromQuery) ? (viewFromQuery as ViewKey) : 'inventory');
+  // 3. ตั้งค่า 'overview' เป็นหน้าเริ่มต้น (default)
+  const active: ViewKey = currentView ?? (isViewKey(viewFromQuery) ? (viewFromQuery as ViewKey) : 'overview');
 
   const go = React.useCallback((k: ViewKey, route?: string) => {
     if (route) return router.push(route);
@@ -221,7 +224,6 @@ export default function AppSidebar({ currentView, onNavigate }: AppSidebarProps)
           <SidebarTrigger />
         </div>
         <div className="px-1 pb-2 sidebar-label group-data-[state=collapsed]/sidebar:hidden">
-          {/* ✅ ส่ง allowedBranchIds เข้า BranchSelect */}
           <BranchSelect allowedBranchIds={allowedBranchIds} />
           {selectedBranchId && (
             <div className="mt-1 text-[10px] text-muted-foreground truncate">

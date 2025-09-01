@@ -2,9 +2,12 @@
 
 // 1. กำหนด Permissions ทั้งหมดในระบบ
 export const PERMISSIONS = [
+  // Overview (Branch-scoped)
+  'overview:read',     // Can view branch overview (KPI, charts, recent activities)
+
   // Inventory Management
-  'inventory:read',   // Can view inventory items
-  'inventory:write',  // Can create/edit inventory items
+  'inventory:read',    // Can view inventory items
+  'inventory:write',   // Can create/edit inventory items
   'inventory:delete',  // Can delete inventory items
 
   // Transfer Management
@@ -20,10 +23,10 @@ export const PERMISSIONS = [
   'branch:settings',   // Can edit branch details
 
   // Admin-level permissions
-  'admin:roles:manage',// Can create, edit, and delete system-wide roles
-  'admin:users:manage',// Can manage all users across all branches
+  'admin:roles:manage',    // Can create, edit, and delete system-wide roles
+  'admin:users:manage',    // Can manage all users across all branches
   'admin:branches:manage', // Can create, edit, and delete branches
-  'admin:view_analytics', // Can view the main analytics dashboard
+  'admin:view_analytics',  // Can view the main analytics dashboard
 ] as const;
 
 export type Permission = typeof PERMISSIONS[number];

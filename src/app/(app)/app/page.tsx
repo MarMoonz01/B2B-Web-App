@@ -1,74 +1,137 @@
 'use client';
 
 import * as React from 'react';
-import { useSearchParams, useRouter } from 'next/navigation';
 import dynamic from 'next/dynamic';
+import { useSearchParams, useRouter } from 'next/navigation';
+
 import { useBranch } from '@/contexts/BranchContext';
-import { FirebaseTest } from '@/src/app/components/FirebaseTest';
+import type { ViewKey } from '@/types/nav';
+import { VIEW_KEYS } from '@/types/nav';
 
-// views
-import MyInventory from '@/src/app/components/MyInventory';
-import TransferPlatformView from '@/src/app/components/TransferPlatformView';
-import TransferRequestsView from '@/src/app/components/TransferRequestsView';
-
-const AnalyticsView = dynamic(() => import('./views/AnalyticsView'), {
-  ssr: false,
-  loading: () => (
-    <Card className="w-full">
-      <CardHeader>
-        <CardTitle>Loading Analytics Dashboard...</CardTitle>
-      </CardHeader>
-      <CardContent>
-        <p>Please wait while we prepare the charts.</p>
-      </CardContent>
-    </Card>
-  ),
-});
-
-
-// UI helpers
+// UI
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 
-// ใช้ type เดียวกับ /types/nav.ts
-import type { ViewKey } from '@/types/nav';
+/* =========================================================
+ * Types for dynamically loaded, branch-scoped views
+ * =======================================================*/
+type BranchScopedProps = { myBranchId: string; myBranchName: string };
+type MyInventoryProps = BranchScopedProps & { onNavigate?: (k: ViewKey) => void };
 
+/* =========================================================
+ * Loader for dynamic views
+ * =======================================================*/
+const ViewLoader: React.FC<{ title: string; subtitle?: string }> = ({ title, subtitle }) => (
+  <Card className="w-full">
+    <CardHeader>
+      <CardTitle>{title}</CardTitle>
+    </CardHeader>
+    {subtitle && (
+      <CardContent>
+        <p>{subtitle}</p>
+      </CardContent>
+    )}
+  </Card>
+);
+
+/* =========================================================
+ * Dynamic imports (with proper prop generics)
+ * =======================================================*/
+const OverviewView = dynamic<BranchScopedProps>(
+  () => import('./views/OverviewView'),
+  { ssr: false, loading: () => <ViewLoader title="Loading Overview..." /> }
+);
+
+const MyInventory = dynamic<MyInventoryProps>(
+  () => import('@/src/app/components/MyInventory'),
+  { ssr: false, loading: () => <ViewLoader title="Loading Inventory..." /> }
+);
+
+const TransferPlatformView = dynamic<BranchScopedProps>(
+  () => import('@/src/app/components/TransferPlatformView'),
+  { ssr: false, loading: () => <ViewLoader title="Loading Transfer Platform..." /> }
+);
+
+const TransferRequestsView = dynamic<BranchScopedProps>(
+  () => import('@/src/app/components/TransferRequestsView'),
+  { ssr: false, loading: () => <ViewLoader title="Loading Transfer Requests..." /> }
+);
+
+const AnalyticsView = dynamic(
+  () => import('./views/AnalyticsView'),
+  { ssr: false, loading: () => <ViewLoader title="Loading Analytics Dashboard..." /> }
+);
+
+const FirebaseTest = dynamic(
+  () => import('@/src/app/components/FirebaseTest').then((mod) => mod.FirebaseTest),
+  { ssr: false, loading: () => <p>Loading debug tools...</p> }
+);
+
+/* =========================================================
+ * Helpers
+ * =======================================================*/
 function isViewKey(v: string | null): v is ViewKey {
-  // ลบ 'network' ออกจาก list นี้
-  return !!v && [
-    'inventory','transfer_platform','transfer_requests',
-    'dashboard','analytics','debug'
-  ].includes(v);
+  return !!v && VIEW_KEYS.includes(v as ViewKey);
 }
 
+const PageWrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
+  <div className="w-full min-h-dvh overflow-x-hidden">
+    <div className="w-full max-w-none p-6">{children}</div>
+  </div>
+);
+
+/* =========================================================
+ * Page
+ * =======================================================*/
 export default function Page() {
   const search = useSearchParams();
   const router = useRouter();
   const { selectedBranch, selectedBranchId, branches, loading, error } = useBranch();
 
-  const view: ViewKey = isViewKey(search?.get('view'))
-    ? (search!.get('view') as ViewKey)
-    : 'inventory';
+  // Active view (default: overview)
+  const view: ViewKey = isViewKey(search?.get('view')) ? (search!.get('view') as ViewKey) : 'overview';
 
   const myBranchId = selectedBranchId || '';
   const myBranchName = selectedBranch?.branchName || selectedBranchId || 'My Branch';
 
-  const Wrapper: React.FC<{ children: React.ReactNode }> = ({ children }) => (
-    <div className="w-full min-h-dvh overflow-x-hidden">
-      <div className="w-full max-w-none p-6">
-        {children}
-      </div>
-    </div>
-  );
-
-  const handleNavigate = React.useCallback((targetView: ViewKey) => {
-    router.push(`/app?view=${targetView}`);
+  const handleNavigate = React.useCallback((k: ViewKey) => {
+    router.push(`/app?view=${k}`);
   }, [router]);
-  
+
+  /* ---------------- Error state ---------------- */
+  if (error) {
+    return (
+      <PageWrapper>
+        <Card className="w-full">
+          <CardHeader>
+            <CardTitle className="text-red-600">❌ Database Connection Error</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <p className="text-red-600">{String(error)}</p>
+            <div className="flex gap-2">
+              <Button onClick={() => window.location.reload()}>🔄 Reload Page</Button>
+              <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Open Debug View</Button>
+            </div>
+          </CardContent>
+        </Card>
+      </PageWrapper>
+    );
+  }
+
+  /* ---------------- Loading state ---------------- */
+  if (loading) {
+    return (
+      <PageWrapper>
+        <ViewLoader title="⏳ Connecting to Database..." subtitle="Loading branch information, please wait." />
+      </PageWrapper>
+    );
+  }
+
+  /* ---------------- Debug view (no branch required) ---------------- */
   if (view === 'debug') {
     return (
-      <Wrapper>
+      <PageWrapper>
         <h1 className="text-2xl font-bold">🐛 Debug Information</h1>
         <FirebaseTest />
         <Card className="w-full mt-4">
@@ -85,10 +148,14 @@ export default function Page() {
               <div>
                 <strong>Available Branches:</strong>
                 <ul className="mt-1 space-y-1">
-                  {branches!.map((b) => (
+                  {branches!.map((b: any) => (
                     <li key={b.id} className="text-sm bg-gray-100 dark:bg-gray-800 p-1 rounded">
                       <strong>{b.id}:</strong> {b.branchName}
-                      {b.isActive ? (<Badge className="ml-2" variant="default">Active</Badge>) : (<Badge className="ml-2" variant="secondary">Inactive</Badge>)}
+                      {b.isActive ? (
+                        <Badge className="ml-2" variant="default">Active</Badge>
+                      ) : (
+                        <Badge className="ml-2" variant="secondary">Inactive</Badge>
+                      )}
                     </li>
                   ))}
                 </ul>
@@ -96,132 +163,51 @@ export default function Page() {
             )}
           </CardContent>
         </Card>
-        <Card className="w-full mt-4">
-          <CardHeader><CardTitle>Environment Variables</CardTitle></CardHeader>
-          <CardContent>
-            <div className="space-y-1 text-sm font-mono">
-              <div>API Key: {process.env.NEXT_PUBLIC_FB_API_KEY ? '✅ Set' : '❌ Missing'}</div>
-              <div>Auth Domain: {process.env.NEXT_PUBLIC_FB_AUTH_DOMAIN ? '✅ Set' : '❌ Missing'}</div>
-              <div>Project ID: {process.env.NEXT_PUBLIC_FB_PROJECT_ID || '❌ Missing'}</div>
-              <div>Storage Bucket: {process.env.NEXT_PUBLIC_FB_STORAGE_BUCKET ? '✅ Set' : '❌ Missing'}</div>
-              <div>Messaging Sender ID: {process.env.NEXT_PUBLIC_FB_MESSAGING_SENDER_ID ? '✅ Set' : '❌ Missing'}</div>
-              <div>App ID: {process.env.NEXT_PUBLIC_FB_APP_ID ? '✅ Set' : '❌ Missing'}</div>
-            </div>
-          </CardContent>
-        </Card>
-        <Button className="mt-4" onClick={() => handleNavigate('inventory')}>Back to Inventory</Button>
-      </Wrapper>
+      </PageWrapper>
     );
   }
 
-  if (error) {
-    return (
-      <Wrapper>
-        <Card className="w-full">
-          <CardHeader><CardTitle className="text-red-600">❌ Database Connection Error</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-red-600">{String(error)}</p>
-            <div>
-              <p><strong>Possible solutions:</strong></p>
-              <ul className="list-disc pl-5 space-y-1">
-                <li>Check your Firebase configuration in <code>.env.local</code></li>
-                <li>Verify your Firebase project settings</li>
-                <li>Check Firestore security rules</li>
-                <li>Ensure you have internet connection</li>
-              </ul>
-            </div>
-            <div className="flex gap-2">
-              <Button onClick={() => window.location.reload()}>🔄 Reload Page</Button>
-              <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Open Debug View</Button>
-            </div>
-          </CardContent>
-        </Card>
-      </Wrapper>
-    );
-  }
-
-  if (loading) {
-    return (
-      <Wrapper>
-        <Card className="w-full">
-          <CardHeader><CardTitle>⏳ Loading...</CardTitle></CardHeader>
-          <CardContent>
-            <p>Connecting to database and loading branch information...</p>
-            <div className="mt-4"><Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Debug Info</Button></div>
-          </CardContent>
-        </Card>
-      </Wrapper>
-    );
-  }
-
+  /* ---------------- No-branch selected ---------------- */
   if (!myBranchId) {
     return (
-      <Wrapper>
+      <PageWrapper>
         <Card className="w-full">
           <CardHeader><CardTitle>🏪 Select a branch to get started</CardTitle></CardHeader>
-          <CardContent className="space-y-4">
-            <p>เลือกสาขาจากเมนูด้านซ้ายบน (BranchSelect) แล้วหน้านี้จะโหลดข้อมูลให้โดยอัตโนมัติ</p>
-            {(branches?.length ?? 0) === 0 && (
-              <div className="space-y-2">
-                <p className="text-amber-600"><strong>⚠️ No branches found in database</strong></p>
-                <p>You may need to:</p>
-                <ul className="list-disc pl-5 space-y-1">
-                  <li>Add some branch data to your Firestore 'stores' collection</li>
-                  <li>Check your Firestore security rules</li>
-                  <li>Verify your Firebase configuration</li>
-                </ul>
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Button variant="outline" onClick={() => handleNavigate('debug')}>🐛 Debug Info</Button>
-              <Button onClick={() => window.location.reload()}>🔄 Reload</Button>
-            </div>
+          <CardContent>
+            <p>Please select a branch from the switcher in the header to view its data.</p>
           </CardContent>
         </Card>
-      </Wrapper>
+      </PageWrapper>
     );
   }
 
+  /* ---------------- View router ---------------- */
+  const renderCurrentView = () => {
+    switch (view) {
+      case 'overview':
+        return <OverviewView myBranchId={myBranchId} myBranchName={myBranchName} />;
+
+      case 'inventory':
+        return <MyInventory myBranchId={myBranchId} myBranchName={myBranchName} onNavigate={handleNavigate} />;
+
+      case 'transfer_platform':
+        return <TransferPlatformView myBranchId={myBranchId} myBranchName={myBranchName} />;
+
+      case 'transfer_requests':
+        return <TransferRequestsView myBranchId={myBranchId} myBranchName={myBranchName} />;
+
+      case 'dashboard':
+      case 'analytics':
+        return <AnalyticsView />;
+
+      default:
+        return <OverviewView myBranchId={myBranchId} myBranchName={myBranchName} />;
+    }
+  };
+
   return (
-    <Wrapper>
-      {(() => {
-        switch (view) {
-          case 'inventory':
-            return (
-              <MyInventory
-                myBranchId={myBranchId}
-                myBranchName={myBranchName}
-                onNavigate={handleNavigate}
-              />
-            );
-          case 'transfer_platform':
-            return (
-              <TransferPlatformView
-                myBranchId={myBranchId}
-                myBranchName={myBranchName}
-              />
-            );
-          case 'transfer_requests':
-            return (
-              <TransferRequestsView
-                myBranchId={myBranchId}
-                myBranchName=""
-              />
-            );
-          case 'dashboard':
-          case 'analytics':
-            return <AnalyticsView />;
-          // --- ลบ case 'network' ออกจากส่วนนี้ ---
-          default:
-            return (
-              <MyInventory
-                myBranchId={myBranchId}
-                myBranchName={myBranchName}
-                onNavigate={handleNavigate}
-              />
-            );
-        }
-      })()}
-    </Wrapper>
+    <PageWrapper>
+      {renderCurrentView()}
+    </PageWrapper>
   );
 }

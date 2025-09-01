@@ -1,100 +1,144 @@
-// src/app/api/analytics/summary/route.ts
-export const dynamic = 'force-dynamic';
+// /api/analytics/summary/route.ts — Branch-only API for Overview
+export const dynamic = "force-dynamic";
 
-import { NextResponse } from 'next/server';
-import { db } from '@/src/lib/firebaseAdmin';
-import { getServerSession } from '@/src/lib/session';
+import { NextResponse } from "next/server";
+import { db } from "@/src/lib/firebaseAdmin";
+import { getServerSession } from "@/src/lib/session";
 
-// --- เพิ่ม Type Definition ---
-interface StoreData {
-    id: string;
-    branchName?: string;
-    // ... any other fields in your store document
+function parseDateOnlyISO(s?: string): Date | null {
+  if (!s) return null;
+  const ok = /^\d{4}-\d{2}-\d{2}$/.test(s);
+  return ok ? new Date(`${s}T00:00:00.000Z`) : null;
 }
 
-export async function GET() {
-  const me = await getServerSession();
-  if (!me?.moderator) {
-    return NextResponse.json({ ok: false, error: 'forbidden' }, { status: 403 });
-  }
-
+export async function GET(req: Request) {
   try {
-    // --- 1. Summary Card Data ---
-    const storesSnap = await db.collection('stores').get();
-    const usersSnap = await db.collection('users').get();
-    const transfersSnap = await db.collection('transfer_requests').where('status', '==', 'pending').get();
-    const inventorySnap = await db.collectionGroup('inventory').get();
+    const me = await getServerSession();
+    if (!me) return NextResponse.json({ ok: false, error: "unauthenticated" }, { status: 401 });
 
-    const totalInventoryValue = inventorySnap.docs.reduce((sum, doc) => {
-        const item = doc.data();
-        const price = Number(item.price) || 0;
-        const quantity = Number(item.quantity) || 0;
-        return sum + (price * quantity);
-    }, 0);
+    const { searchParams } = new URL(req.url);
+    const branchId = searchParams.get("branchId");
+    const fromISO = searchParams.get("from");
+    const toISO = searchParams.get("to");
 
-    const summaryData = {
-        totalInventoryValue,
-        pendingTransfers: transfersSnap.size,
-        branchCount: storesSnap.size,
-        totalUsers: usersSnap.size,
+    if (!branchId) return NextResponse.json({ ok: false, error: "branchId_required" }, { status: 400 });
+
+    const from = parseDateOnlyISO(fromISO);
+    const to = parseDateOnlyISO(toISO);
+
+    // 1) INVENTORY SNAPSHOT — stores/{branchId}/inventory/*/models/*/variants/*
+    const storeRef = db.collection("stores").doc(branchId);
+    const invRef = storeRef.collection("inventory");
+
+    const invSnap = await invRef.get();
+    let totalInventoryValue = 0;
+    let skuCount = 0;
+    let outOfStockCount = 0;
+    const categoryCounter: Record<string, number> = {};
+
+    for (const brandDoc of invSnap.docs) {
+      const modelsSnap = await brandDoc.ref.collection("models").get();
+      for (const modelDoc of modelsSnap.docs) {
+        const variantsSnap = await modelDoc.ref.collection("variants").get();
+        for (const v of variantsSnap.docs) {
+          const d: any = v.data();
+          const qty = Number(d.quantity ?? 0);
+          const unit = Number(d.price ?? d.base ?? d.unitPrice ?? 0);
+          totalInventoryValue += qty * unit;
+          skuCount += 1;
+          if (qty <= 0) outOfStockCount += 1;
+          const cat = (d.category || d.brandName || brandDoc.id || "Other").toString();
+          categoryCounter[cat] = (categoryCounter[cat] || 0) + qty;
+        }
+      }
+    }
+
+    // 2) TRANSFERS — ใช้คอลเลกชัน transfer_requests (ถ้าโปรดักชันคุณใช้ชื่อ "transfers" ให้เปลี่ยนตรงนี้)
+    const trCol = db.collection("transfer_requests");
+
+    const inclusiveEnd = (d: Date) => new Date(d.getTime() + 24 * 60 * 60 * 1000 - 1);
+    const inWindow = (ts: any) => {
+      if (!from || !to) return true;
+      const val = ts?.toDate ? ts.toDate() : new Date(ts);
+      if (!val || Number.isNaN(val.getTime())) return false;
+      return val >= from && val <= inclusiveEnd(to);
     };
 
-    // --- 2. Inventory Value by Branch ---
-    const inventoryByBranch: { [key: string]: number } = {};
-    inventorySnap.forEach(doc => {
-        const item = doc.data();
-        const branchId = doc.ref.parent.parent?.id;
-        if (branchId) {
-            const price = Number(item.price) || 0;
-            const quantity = Number(item.quantity) || 0;
-            inventoryByBranch[branchId] = (inventoryByBranch[branchId] || 0) + (price * quantity);
-        }
-    });
+    // ทำสอง query แล้ว merge (เพราะ OR คนละฟิลด์ทำตรง ๆ ไม่ได้)
+    const qOut = await trCol.where("fromBranchId", "==", branchId).orderBy("createdAt", "desc").limit(60).get();
+    const qIn  = await trCol.where("toBranchId", "==", branchId).orderBy("createdAt", "desc").limit(60).get();
 
-    // --- แก้ไขส่วนนี้ ---
-    const storesData: StoreData[] = storesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as StoreData));
-    
-    const inventoryByBranchData = Object.entries(inventoryByBranch).map(([branchId, value]) => ({
-        name: storesData.find(s => s.id === branchId)?.branchName || branchId, // Error should be gone now
-        value,
-    }));
-    
-    // --- 3. Transfers Over Time ---
-    const allTransfersSnap = await db.collection('transfer_requests').select('createdAt').get();
-    const transfersByMonth: { [key: string]: number } = {};
-    
-    allTransfersSnap.forEach(doc => {
-        const transfer = doc.data();
-        if (transfer.createdAt?.toDate) {
-            const date = transfer.createdAt.toDate();
-            const month = date.toLocaleString('default', { month: 'short' });
-            transfersByMonth[month] = (transfersByMonth[month] || 0) + 1;
-        }
-    });
-    
-    const transfersOverTimeData = Object.entries(transfersByMonth).map(([name, transfers]) => ({ name, transfers }));
+    let pendingTransfers = 0;
+    let inboundToday = 0;
+    let outboundToday = 0;
 
-    // --- 4. Product Category Distribution ---
-    const categories: { [key: string]: number } = {};
-    inventorySnap.forEach(doc => {
-        const item = doc.data();
-        const category = item.category || 'Uncategorized';
-        categories[category] = (categories[category] || 0) + (Number(item.quantity) || 0);
-    });
+    const todayKey = new Date().toISOString().slice(0, 10);
+    const transfersByMonth: Record<string, number> = {};
+    const productMoveCounter: Record<string, number> = {};
 
-    const productCategoriesData = Object.entries(categories).map(([name, value]) => ({ name, value }));
+    function bumpMonth(d: Date) {
+      const key = d.toLocaleString("default", { month: "short" });
+      transfersByMonth[key] = (transfersByMonth[key] || 0) + 1;
+    }
 
+    const allTr = [...qOut.docs, ...qIn.docs];
+    for (const doc of allTr) {
+      const t: any = doc.data();
+      const created = t.createdAt?.toDate ? t.createdAt.toDate() : new Date(t.createdAt);
+      if (!created || Number.isNaN(created.getTime())) continue;
+      if (!inWindow(t.createdAt)) continue;
+
+      if ((t.status || "").toString().toLowerCase() === "pending") pendingTransfers += 1;
+      bumpMonth(created);
+
+      const key = created.toISOString().slice(0, 10);
+      if (key === todayKey) {
+        if (t.toBranchId === branchId) inboundToday += 1;
+        if (t.fromBranchId === branchId) outboundToday += 1;
+      }
+
+      // top movers: รวมจำนวนตามชื่อสินค้า
+      const items: any[] = Array.isArray(t.items) ? t.items : [];
+      for (const it of items) {
+        const name = (it.productName || it.name || it.sku || it.variantId || "Item").toString();
+        const q = Number(it.quantity ?? 0);
+        if (q > 0) productMoveCounter[name] = (productMoveCounter[name] || 0) + q;
+      }
+    }
+
+    // shape outputs
+    const productCategoriesData = Object.entries(categoryCounter)
+      .map(([name, value]) => ({ name, value }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10);
+
+    const transfersOverTimeData = Object.entries(transfersByMonth)
+      .map(([label, count]) => ({ label, count }))
+      .sort((a, b) => a.label.localeCompare(b.label));
+
+    const topMovingProductsData = Object.entries(productMoveCounter)
+      .map(([name, moved]) => ({ name, moved }))
+      .sort((a, b) => (b.moved as number) - (a.moved as number))
+      .slice(0, 15);
+
+    const summaryData = {
+      totalInventoryValue,
+      skuCount,
+      outOfStockCount,
+      pendingTransfers,
+      inboundToday,
+      outboundToday,
+    };
 
     return NextResponse.json({
       ok: true,
       summaryData,
-      inventoryByBranchData,
       transfersOverTimeData,
       productCategoriesData,
+      topMovingProductsData,
     });
-
-  } catch (error) {
-    console.error('Error fetching analytics data:', error);
-    return NextResponse.json({ ok: false, error: 'internal_server_error' }, { status: 500 });
+  } catch (e) {
+    console.error(e);
+    return NextResponse.json({ ok: false, error: "internal_server_error" }, { status: 500 });
   }
 }

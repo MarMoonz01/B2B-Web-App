@@ -1,44 +1,25 @@
-// src/lib/permissionsHelper.ts
 import { db } from '@/src/lib/firebaseAdmin';
 import type { Me } from '@/src/lib/session';
-import type { Permission, Role } from '@/types/permission';
+import type { Permission } from '@/types/permission';
 
-// Cache to avoid fetching the same roles multiple times in one request
-let rolesCache: Role[] | null = null;
-
-async function getRoles(): Promise<Role[]> {
-  if (rolesCache) {
-    return rolesCache;
-  }
-  const rolesSnap = await db.collection('roles').get();
-  rolesCache = rolesSnap.docs.map(doc => ({ id: doc.id, ...doc.data() } as Role));
-  return rolesCache;
-}
-
-/**
- * Checks if a user has a specific permission.
- * This is a server-side function.
- */
 export async function hasPermission(user: Me, permission: Permission): Promise<boolean> {
-  // Super-admin (moderator) always has all permissions
-  if (user.moderator) {
-    return true;
+  if (user.moderator) return true;
+
+  const branchId = (user as any).selectedBranchId ?? null;
+
+  // 1) ใช้ branchPerms จาก session ก่อน
+  let branchPerms: any = (user as any).branchPerms;
+
+  // 2) ถ้าไม่มีใน session ให้ดึงจาก Firestore (server side เท่านั้น)
+  if (!branchPerms && (user as any).uid) {
+    try {
+      const snap = await db.collection('users').doc((user as any).uid).get();
+      if (snap.exists) branchPerms = (snap.data() as any).branchPerms;
+    } catch (_) {}
   }
 
-  // Find the role assigned to the user in their currently selected branch
-  const userRoleInBranch = user.branches.find(b => b.id === user.selectedBranchId)?.roles?.[0];
+  if (branchId && branchPerms?.[branchId]?.[permission] === true) return true;
 
-  if (!userRoleInBranch) {
-    return false; // No role in this branch, so no permissions
-  }
-  
-  const allRoles = await getRoles();
-  const roleDetails = allRoles.find(r => r.name === userRoleInBranch); // Assuming role name is stored
-
-  if (!roleDetails) {
-    return false; // Role not found in the system
-  }
-  
-  // Check if the role's permissions array includes the required permission
-  return roleDetails.permissions.includes(permission);
+  // ถ้าเลิกใช้ระบบ role-table ไปแล้ว ก็จบได้เลย
+  return false;
 }
