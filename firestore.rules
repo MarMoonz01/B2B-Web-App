@@ -4,17 +4,16 @@ service cloud.firestore {
   match /databases/{database}/documents {
 
     /* ============== Helpers ============== */
-
     function isSignedIn() {
       return request.auth != null;
     }
 
-    // อ่านข้อมูล users/{uid} เพื่อดูสถานะ moderator
+    // อ่านโปรไฟล์ผู้ใช้ (moderator, branchPerms, branchPerms.<branchId>.*)
     function userData(uid) {
       return get(/databases/$(database)/documents/users/$(uid)).data;
     }
 
-    // moderator จาก custom token หรือจาก users/{uid}.moderator
+    // moderator จาก custom token หรือ users/{uid}.moderator
     function isModerator() {
       return isSignedIn() && (
         request.auth.token.moderator == true ||
@@ -22,22 +21,17 @@ service cloud.firestore {
       );
     }
 
-    // ---- Legacy roles โดยอิงคอลเลกชัน userBranchRoles ----
+    /* ===== Legacy roles (คงไว้เพื่อความเข้ากันได้) ===== */
     // เอกสารถูกตั้งชื่อเป็น: {uid}_{branchId}_{ROLE}
     function hasRoleInBranch(uid, branchId, role) {
-      return exists(
-        /databases/$(database)/documents/userBranchRoles/$(uid + "_" + branchId + "_" + role)
-      );
+      return exists(/databases/$(database)/documents/userBranchRoles/$(uid + "_" + branchId + "_" + role));
     }
-
     function isBranchAdmin(uid, branchId) {
       return isModerator() || hasRoleInBranch(uid, branchId, "ADMIN");
     }
-
     function isBranchSales(uid, branchId) {
       return isBranchAdmin(uid, branchId) || hasRoleInBranch(uid, branchId, "SALES");
     }
-
     function isBranchViewer(uid, branchId) {
       return isBranchAdmin(uid, branchId)
           || hasRoleInBranch(uid, branchId, "SALES")
@@ -45,53 +39,150 @@ service cloud.firestore {
           || hasRoleInBranch(uid, branchId, "USER");
     }
 
-    // order เกี่ยวข้องสาขาไหนบ้าง
-    function canViewOrder(uid) {
-      return (
-        (('branchId' in resource.data)      && isBranchViewer(uid, resource.data.branchId)) ||
-        (('buyerBranchId' in resource.data) && isBranchViewer(uid, resource.data.buyerBranchId)) ||
-        (('sellerBranchId' in resource.data)&& isBranchViewer(uid, resource.data.sellerBranchId))
-      );
+    /* ===== New permission model (users/{uid}.branchPerms) ===== */
+    // ปลอดภัยต่อ key ที่ไม่มีอยู่
+    function hasBranchPerm(uid, branchId, perm) {
+      let u = userData(uid);
+      let hasPerms = 'branchPerms' in u;
+      let hasBranch = hasPerms && (branchId in u.branchPerms);
+      let hasKey = hasBranch && (perm in u.branchPerms[branchId]);
+      return hasKey && (u.branchPerms[branchId][perm] == true);
     }
 
-    // transfer เกี่ยวข้องสาขาไหนบ้าง (รองรับ involvedBranches[0..1])
-    function canViewTransfer(uid) {
-      let base =
-        (('fromBranchId' in resource.data) && isBranchViewer(uid, resource.data.fromBranchId)) ||
-        (('toBranchId' in resource.data)   && isBranchViewer(uid, resource.data.toBranchId));
+    // ใช้ผ่อนให้อ่านได้ถ้ามีสิทธิ์ "ใดๆ" ในสาขานั้น (สำหรับ Overview)
+    function hasAnyBranchPerm(uid, branchId) {
+      let u = userData(uid);
+      let hasPerms = 'branchPerms' in u;
+      return hasPerms && (branchId in u.branchPerms);
+    }
 
+    // === รวม logic ตรวจ "เอกสารนี้เกี่ยวกับสาขาที่ผู้ใช้มีสิทธิ์หรือไม่" ===
+    // รองรับได้หลายชื่อฟิลด์ที่พบบ่อย: fromBranchId/toBranchId, fromStoreId/toStoreId,
+    // branchId (เดี่ยว), involvedBranches/branchIds/branches (array ของ branchId)
+    function relatedToBranch(uid) {
+      // 1) single fields
+      let fFrom = (('fromBranchId' in resource.data) && (
+        isBranchViewer(uid, resource.data.fromBranchId) ||
+        hasBranchPerm(uid, resource.data.fromBranchId, 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.fromBranchId, 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.fromBranchId)
+      ));
+      let fTo = (('toBranchId' in resource.data) && (
+        isBranchViewer(uid, resource.data.toBranchId) ||
+        hasBranchPerm(uid, resource.data.toBranchId, 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.toBranchId, 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.toBranchId)
+      ));
+      // alias: fromStoreId / toStoreId
+      let sFrom = (('fromStoreId' in resource.data) && (
+        isBranchViewer(uid, resource.data.fromStoreId) ||
+        hasBranchPerm(uid, resource.data.fromStoreId, 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.fromStoreId, 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.fromStoreId)
+      ));
+      let sTo = (('toStoreId' in resource.data) && (
+        isBranchViewer(uid, resource.data.toStoreId) ||
+        hasBranchPerm(uid, resource.data.toStoreId, 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.toStoreId, 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.toStoreId)
+      ));
+      // single branchId
+      let singleB = (('branchId' in resource.data) && (
+        isBranchViewer(uid, resource.data.branchId) ||
+        hasBranchPerm(uid, resource.data.branchId, 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.branchId, 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.branchId)
+      ));
+
+      // 2) array fields
       let hasInv = 'involvedBranches' in resource.data;
-      let n      = hasInv ? resource.data.involvedBranches.size() : 0;
-      let br0    = (n >= 1) && isBranchViewer(uid, resource.data.involvedBranches[0]);
-      let br1    = (n >= 2) && isBranchViewer(uid, resource.data.involvedBranches[1]);
+      let hasArrIds = 'branchIds' in resource.data;
+      let hasArrName = 'branches' in resource.data;
 
-      return base || (hasInv && (br0 || br1));
+      let nInv = hasInv ? resource.data.involvedBranches.size() : 0;
+      let nIds = hasArrIds ? resource.data.branchIds.size() : 0;
+      let nBrs = hasArrName ? resource.data.branches.size() : 0;
+
+      let inv0 = hasInv && (nInv >= 1) && (
+        isBranchViewer(uid, resource.data.involvedBranches[0]) ||
+        hasBranchPerm(uid, resource.data.involvedBranches[0], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.involvedBranches[0], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.involvedBranches[0])
+      );
+      let inv1 = hasInv && (nInv >= 2) && (
+        isBranchViewer(uid, resource.data.involvedBranches[1]) ||
+        hasBranchPerm(uid, resource.data.involvedBranches[1], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.involvedBranches[1], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.involvedBranches[1])
+      );
+      let inv2 = hasInv && (nInv >= 3) && (
+        isBranchViewer(uid, resource.data.involvedBranches[2]) ||
+        hasBranchPerm(uid, resource.data.involvedBranches[2], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.involvedBranches[2], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.involvedBranches[2])
+      );
+      let inv3 = hasInv && (nInv >= 4) && (
+        isBranchViewer(uid, resource.data.involvedBranches[3]) ||
+        hasBranchPerm(uid, resource.data.involvedBranches[3], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.involvedBranches[3], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.involvedBranches[3])
+      );
+
+      let ids0 = hasArrIds && (nIds >= 1) && (
+        isBranchViewer(uid, resource.data.branchIds[0]) ||
+        hasBranchPerm(uid, resource.data.branchIds[0], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.branchIds[0], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.branchIds[0])
+      );
+      let ids1 = hasArrIds && (nIds >= 2) && (
+        isBranchViewer(uid, resource.data.branchIds[1]) ||
+        hasBranchPerm(uid, resource.data.branchIds[1], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.branchIds[1], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.branchIds[1])
+      );
+
+      let brs0 = hasArrName && (nBrs >= 1) && (
+        isBranchViewer(uid, resource.data.branches[0]) ||
+        hasBranchPerm(uid, resource.data.branches[0], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.branches[0], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.branches[0])
+      );
+      let brs1 = hasArrName && (nBrs >= 2) && (
+        isBranchViewer(uid, resource.data.branches[1]) ||
+        hasBranchPerm(uid, resource.data.branches[1], 'transfer:read') ||
+        hasBranchPerm(uid, resource.data.branches[1], 'overview:read') ||
+        hasAnyBranchPerm(uid, resource.data.branches[1])
+      );
+
+      return fFrom || fTo || sFrom || sTo || singleB ||
+             inv0 || inv1 || inv2 || inv3 ||
+             ids0 || ids1 ||
+             brs0 || brs1;
     }
 
-    /* ============== roles / userBranchRoles ============== */
-
+    /* ======================= roles (legacy) ======================= */
     match /roles/{roleId} {
       allow read: if isSignedIn();
-      // จัดการ role ได้เฉพาะ moderator
       allow create, update, delete: if isModerator();
     }
 
-    // เก็บประวัติการ assign/remove แบบ audit log
     match /userBranchRoles/{docId} {
-      allow read: if isSignedIn() && (
+      // get เอกสารของตัวเอง (docId เริ่มด้วย uid_) หรือ moderator
+      allow get: if isSignedIn() && (isModerator() || docId.startsWith(request.auth.uid + "_"));
+
+      // list/read: ของตนเอง / moderator / admin ของสาขานั้น (รองรับ where('uid','==',uid))
+      allow list, read: if isSignedIn() && (
         isModerator() ||
         (resource.data.uid == request.auth.uid) ||
         (('branchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.branchId))
       );
 
-      // เขียนผ่านเซิร์ฟเวอร์ – แต่ให้ moderator หรือแอดมินสาขาทำได้
+      // เขียนผ่าน server: moderator หรือ admin สาขาที่เกี่ยวข้อง
       allow create: if isSignedIn() && (
         isModerator() ||
-        (('branchId' in request.resource.data) &&
-         isBranchAdmin(request.auth.uid, request.resource.data.branchId))
+        (('branchId' in request.resource.data) && isBranchAdmin(request.auth.uid, request.resource.data.branchId))
       );
-
-      allow update: if false; // ไม่แก้ย้อนหลัง
+      allow update: if false;
       allow delete: if isSignedIn() && (
         isModerator() ||
         (('branchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.branchId))
@@ -99,100 +190,134 @@ service cloud.firestore {
     }
 
     /* ======================= users ======================= */
-
     match /users/{userId} {
-      // เจ้าของอ่าน/แก้ได้ หรือ moderator
-      allow read:  if isSignedIn() && (request.auth.uid == userId || isModerator());
-      allow write: if isSignedIn() && (request.auth.uid == userId || isModerator());
+      allow read, write: if isSignedIn() && (request.auth.uid == userId || request.auth.token.moderator == true);
     }
 
-    /* =============== stores & inventory =============== */
-    // ✅ เปิดให้อ่านสต็อก "ทุกสาขา" ได้เมื่อ login (เพื่อให้ Transfer Platform ทำงานข้ามสาขา)
-    //    เขียน/ลบ จำกัดที่แอดมินสาขา/ม็อด
+    /* ============== branches / stores & inventory ============== */
+    match /branches/{branchId} {
+      allow read: if isSignedIn();
+      allow write: if isModerator();
+    }
 
     match /stores/{branchId} {
       allow read:  if isSignedIn();
-      allow write: if isModerator(); // ฟิลด์ระดับสาขา
+      allow write: if isModerator();
 
       match /inventory/{brandId} {
-        allow read:  if isSignedIn(); // สำคัญสำหรับ Transfer Platform
-        allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+        allow read:  if isSignedIn();
+
+        allow write: if isSignedIn() && (
+          isBranchAdmin(request.auth.uid, branchId) ||
+          hasBranchPerm(request.auth.uid, branchId, 'inventory:write')
+        );
 
         match /models/{modelId} {
           allow read:  if isSignedIn();
-          allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+          allow write: if isSignedIn() && (
+            isBranchAdmin(request.auth.uid, branchId) ||
+            hasBranchPerm(request.auth.uid, branchId, 'inventory:write')
+          );
 
           match /variants/{variantId} {
             allow read:  if isSignedIn();
-            allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+            allow write: if isSignedIn() && (
+              isBranchAdmin(request.auth.uid, branchId) ||
+              hasBranchPerm(request.auth.uid, branchId, 'inventory:write')
+            );
 
             match /dots/{dotCode} {
               allow read:  if isSignedIn();
-              allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+              allow write: if isSignedIn() && (
+                isBranchAdmin(request.auth.uid, branchId) ||
+                hasBranchPerm(request.auth.uid, branchId, 'inventory:write')
+              );
             }
           }
         }
 
-        // fallback ภายใต้ inventory/*
         match /{any=**} {
           allow read:  if isSignedIn();
-          allow write: if isSignedIn() && isBranchAdmin(request.auth.uid, branchId);
+          allow write: if isSignedIn() && (
+            isBranchAdmin(request.auth.uid, branchId) ||
+            hasBranchPerm(request.auth.uid, branchId, 'inventory:write')
+          );
         }
       }
     }
 
     /* ======================== orders ======================== */
-
     match /orders/{orderId} {
-      // create: อนุญาตเฉพาะคนขายสาขานั้น ๆ หรือ moderator
       allow create: if isSignedIn() && (
         isModerator() ||
-        (('branchId' in request.resource.data) &&
-         isBranchSales(request.auth.uid, request.resource.data.branchId))
+        (('branchId' in request.resource.data) && (
+          isBranchSales(request.auth.uid, request.resource.data.branchId) ||
+          hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'inventory:write')
+        ))
       );
 
-      // read: สมาชิกสาขาที่เกี่ยวข้อง หรือ moderator
-      allow read: if isSignedIn() && (isModerator() || canViewOrder(request.auth.uid));
+      allow read: if isSignedIn() && (
+        isModerator() ||
+        ( // legacy viewer หรือ perms ใหม่
+          (('branchId' in resource.data)      && (isBranchViewer(request.auth.uid, resource.data.branchId)      || hasBranchPerm(request.auth.uid, resource.data.branchId, 'overview:read') || hasBranchPerm(request.auth.uid, resource.data.branchId, 'transfer:read'))) ||
+          (('buyerBranchId' in resource.data) && (isBranchViewer(request.auth.uid, resource.data.buyerBranchId)  || hasBranchPerm(request.auth.uid, resource.data.buyerBranchId,  'overview:read') || hasBranchPerm(request.auth.uid, resource.data.buyerBranchId,  'transfer:read'))) ||
+          (('sellerBranchId' in resource.data)&& (isBranchViewer(request.auth.uid, resource.data.sellerBranchId) || hasBranchPerm(request.auth.uid, resource.data.sellerBranchId, 'overview:read') || hasBranchPerm(request.auth.uid, resource.data.sellerBranchId, 'transfer:read')))
+        )
+      );
 
-      // update: แอดมินสาขาที่เกี่ยวข้อง หรือ moderator
       allow update: if isSignedIn() && (
         isModerator() ||
-        (('branchId' in resource.data)      && isBranchAdmin(request.auth.uid, resource.data.branchId)) ||
-        (('buyerBranchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.buyerBranchId)) ||
-        (('sellerBranchId' in resource.data)&& isBranchAdmin(request.auth.uid, resource.data.sellerBranchId))
+        (('branchId' in resource.data)      && (isBranchAdmin(request.auth.uid, resource.data.branchId)      || hasBranchPerm(request.auth.uid, resource.data.branchId, 'inventory:write'))) ||
+        (('buyerBranchId' in resource.data) && (isBranchAdmin(request.auth.uid, resource.data.buyerBranchId) || hasBranchPerm(request.auth.uid, resource.data.buyerBranchId,  'inventory:write'))) ||
+        (('sellerBranchId' in resource.data)&& (isBranchAdmin(request.auth.uid, resource.data.sellerBranchId)|| hasBranchPerm(request.auth.uid, resource.data.sellerBranchId, 'inventory:write')))
       );
 
       allow delete: if isModerator();
     }
 
     /* ======================= transfers ======================= */
-
     match /transfers/{transferId} {
-      // create: อนุญาตผู้มีสิทธิ์ขายของสาขาต้น/ปลาย หรือใน involvedBranches หรือ moderator
+      // create: legacy SALES/ADMIN หรือ perm transfer:create
       allow create: if isSignedIn() && (
         isModerator() ||
-        (('fromBranchId' in request.resource.data) && isBranchSales(request.auth.uid, request.resource.data.fromBranchId)) ||
-        (('toBranchId' in request.resource.data)   && isBranchSales(request.auth.uid, request.resource.data.toBranchId))   ||
+        (('fromBranchId' in request.resource.data) && (isBranchSales(request.auth.uid, request.resource.data.fromBranchId) || hasBranchPerm(request.auth.uid, request.resource.data.fromBranchId, 'transfer:create'))) ||
+        (('toBranchId' in request.resource.data)   && (isBranchSales(request.auth.uid, request.resource.data.toBranchId)   || hasBranchPerm(request.auth.uid, request.resource.data.toBranchId,   'transfer:create'))) ||
+        (('fromStoreId' in request.resource.data)  && (isBranchSales(request.auth.uid, request.resource.data.fromStoreId)  || hasBranchPerm(request.auth.uid, request.resource.data.fromStoreId,  'transfer:create'))) ||
+        (('toStoreId' in request.resource.data)    && (isBranchSales(request.auth.uid, request.resource.data.toStoreId)    || hasBranchPerm(request.auth.uid, request.resource.data.toStoreId,    'transfer:create'))) ||
         (('involvedBranches' in request.resource.data) &&
          (
-           ((request.resource.data.involvedBranches.size() >= 1) && isBranchSales(request.auth.uid, request.resource.data.involvedBranches[0])) ||
-           ((request.resource.data.involvedBranches.size() >= 2) && isBranchSales(request.auth.uid, request.resource.data.involvedBranches[1]))
+           ((request.resource.data.involvedBranches.size() >= 1) && (isBranchSales(request.auth.uid, request.resource.data.involvedBranches[0]) || hasBranchPerm(request.auth.uid, request.resource.data.involvedBranches[0], 'transfer:create'))) ||
+           ((request.resource.data.involvedBranches.size() >= 2) && (isBranchSales(request.auth.uid, request.resource.data.involvedBranches[1]) || hasBranchPerm(request.auth.uid, request.resource.data.involvedBranches[1], 'transfer:create')))
+         )
+        ) ||
+        (('branchIds' in request.resource.data) &&
+         (
+           ((request.resource.data.branchIds.size() >= 1) && (isBranchSales(request.auth.uid, request.resource.data.branchIds[0]) || hasBranchPerm(request.auth.uid, request.resource.data.branchIds[0], 'transfer:create'))) ||
+           ((request.resource.data.branchIds.size() >= 2) && (isBranchSales(request.auth.uid, request.resource.data.branchIds[1]) || hasBranchPerm(request.auth.uid, request.resource.data.branchIds[1], 'transfer:create')))
          )
         )
       );
 
-      // read: สมาชิกสาขาที่เกี่ยวข้อง หรือ moderator
-      allow read: if isSignedIn() && (isModerator() || canViewTransfer(request.auth.uid));
+      // read: อนุญาตถ้าเอกสารเกี่ยวกับสาขาที่ผู้ใช้มีสิทธิ์ (รวม alias field ทุกแบบ)
+      allow read: if isSignedIn() && (isModerator() || relatedToBranch(request.auth.uid));
 
-      // update: แอดมินสาขาที่เกี่ยวข้อง หรือ moderator
+      // update: admin หรือ transfer:approve (ยึด alias เช่นกันเมื่อใช้ในส่วน create)
       allow update: if isSignedIn() && (
         isModerator() ||
-        (('fromBranchId' in resource.data) && isBranchAdmin(request.auth.uid, resource.data.fromBranchId)) ||
-        (('toBranchId' in resource.data)   && isBranchAdmin(request.auth.uid, resource.data.toBranchId))   ||
+        (('fromBranchId' in resource.data) && (isBranchAdmin(request.auth.uid, resource.data.fromBranchId) || hasBranchPerm(request.auth.uid, resource.data.fromBranchId, 'transfer:approve'))) ||
+        (('toBranchId' in resource.data)   && (isBranchAdmin(request.auth.uid, resource.data.toBranchId)   || hasBranchPerm(request.auth.uid, resource.data.toBranchId,   'transfer:approve'))) ||
+        (('fromStoreId' in resource.data)  && (isBranchAdmin(request.auth.uid, resource.data.fromStoreId)  || hasBranchPerm(request.auth.uid, resource.data.fromStoreId,  'transfer:approve'))) ||
+        (('toStoreId' in resource.data)    && (isBranchAdmin(request.auth.uid, resource.data.toStoreId)    || hasBranchPerm(request.auth.uid, resource.data.toStoreId,    'transfer:approve'))) ||
         (('involvedBranches' in resource.data) &&
          (
-           ((resource.data.involvedBranches.size() >= 1) && isBranchAdmin(request.auth.uid, resource.data.involvedBranches[0])) ||
-           ((resource.data.involvedBranches.size() >= 2) && isBranchAdmin(request.auth.uid, resource.data.involvedBranches[1]))
+           ((resource.data.involvedBranches.size() >= 1) && (isBranchAdmin(request.auth.uid, resource.data.involvedBranches[0]) || hasBranchPerm(request.auth.uid, resource.data.involvedBranches[0], 'transfer:approve'))) ||
+           ((resource.data.involvedBranches.size() >= 2) && (isBranchAdmin(request.auth.uid, resource.data.involvedBranches[1]) || hasBranchPerm(request.auth.uid, resource.data.involvedBranches[1], 'transfer:approve')))
+         )
+        ) ||
+        (('branchIds' in resource.data) &&
+         (
+           ((resource.data.branchIds.size() >= 1) && (isBranchAdmin(request.auth.uid, resource.data.branchIds[0]) || hasBranchPerm(request.auth.uid, resource.data.branchIds[0], 'transfer:approve'))) ||
+           ((resource.data.branchIds.size() >= 2) && (isBranchAdmin(request.auth.uid, resource.data.branchIds[1]) || hasBranchPerm(request.auth.uid, resource.data.branchIds[1], 'transfer:approve')))
          )
         )
       );
@@ -200,32 +325,47 @@ service cloud.firestore {
       allow delete: if isModerator();
     }
 
-    /* ===================== notifications ===================== */
+    /* ======================= dailySummaries ======================= */
+    match /dailySummaries/{sumId} {
+      allow read: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in resource.data) && (isBranchViewer(request.auth.uid, resource.data.branchId) || hasBranchPerm(request.auth.uid, resource.data.branchId, 'overview:read')))
+      );
+      allow create, update, delete: if isModerator();
+    }
 
+    /* ======================= notifications ======================= */
     match /notifications/{notifId} {
-      allow read, update:
-        if isSignedIn() && (isModerator() || isBranchViewer(request.auth.uid, resource.data.branchId));
-      // สร้างแนะนำให้ผ่าน server (moderator เท่านั้น)
+      allow read, update: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in resource.data) && (isBranchViewer(request.auth.uid, resource.data.branchId) || hasBranchPerm(request.auth.uid, resource.data.branchId, 'overview:read')))
+      );
       allow create: if isSignedIn() && isModerator();
       allow delete: if isModerator();
     }
 
     /* ===================== stockMovements ===================== */
-
     match /stockMovements/{moveId} {
-      allow read: if isSignedIn() && (isModerator() || isBranchViewer(request.auth.uid, resource.data.branchId));
+      allow read: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in resource.data) && (isBranchViewer(request.auth.uid, resource.data.branchId) || hasBranchPerm(request.auth.uid, resource.data.branchId, 'overview:read')))
+      );
       allow create: if isSignedIn() && (
         isModerator() ||
-        (('branchId' in request.resource.data) && isBranchAdmin(request.auth.uid, request.resource.data.branchId))
+        (('branchId' in request.resource.data) && (isBranchAdmin(request.auth.uid, request.resource.data.branchId) || hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'inventory:write')))
       );
       allow update, delete: if false;
     }
 
     /* ===================== branchApplications ===================== */
-
     match /branchApplications/{appId} {
-      allow create: if true;              // ฟอร์มสมัครสาขา
+      allow create: if true;
       allow read, update, delete: if isModerator();
+    }
+
+    /* =============== Default deny =============== */
+    match /{document=**} {
+      allow read, write: if false;
     }
   }
 }

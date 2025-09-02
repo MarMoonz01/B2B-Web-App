@@ -1,11 +1,10 @@
 'use client';
 
 import * as React from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { Building2, ChevronsUpDown, Check } from 'lucide-react';
 
 import { useBranch } from '@/contexts/BranchContext';
-
 import { Button } from '@/components/ui/button';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import {
@@ -18,7 +17,10 @@ import {
 } from '@/components/ui/command';
 import { cn } from '@/lib/utils';
 
-type VisibleBranch = { id: string; branchName?: string; name?: string; isActive?: boolean };
+// ✅ ใช้ hook ฝั่ง Firebase ที่แก้แล้ว
+import { useUserBranches } from '@/hooks/useUserBranches';
+
+type VisibleItem = { id: string; name: string };
 
 export default function BranchSelect({
   allowedBranchIds,
@@ -29,79 +31,33 @@ export default function BranchSelect({
   const { selectedBranchId, setSelectedBranchId } = useBranch();
   const [open, setOpen] = React.useState(false);
 
-  // ใช้ใน queryKey เพื่อให้ refetch เมื่อสิทธิเปลี่ยน (เช่นโหลด me เสร็จ)
-  const allowKey = React.useMemo(
+  // 🔗 ดึงสาขาที่ผู้ใช้มีสิทธิ์จาก Firestore (ปลอดภัยตาม rules)
+  const { branches, loading, error } = useUserBranches();
+
+  // map -> UI items
+  const rawItems = React.useMemo<VisibleItem[]>(
     () =>
-      allowedBranchIds && allowedBranchIds.length
-        ? [...allowedBranchIds].sort().join('|')
-        : 'none',
-    [allowedBranchIds]
-  );
-
-  const { data, isLoading, error } = useQuery({
-    queryKey: ['branches', 'scoped', allowKey],
-    queryFn: async (): Promise<Record<string, string>> => {
-      const toRecord = (arr: VisibleBranch[] | undefined) => {
-        const out: Record<string, string> = {};
-        (arr ?? []).forEach((b) => {
-          if (typeof b.isActive === 'boolean' && !b.isActive) return;
-          out[b.id] = (b.branchName || b.name || b.id).toString();
-        });
-        return out;
-      };
-
-      // 1) ลอง /list ก่อน (ควรเป็นรายการที่ backend กรองตามสิทธิแล้ว)
-      const rList = await fetch('/api/branches/list', { cache: 'no-store' }).catch(() => null);
-      if (rList) {
-        try {
-          const d = await rList.json();
-          if (rList.ok && d?.ok && Array.isArray(d.branches) && d.branches.length > 0) {
-            return toRecord(d.branches as VisibleBranch[]);
-          }
-        } catch {
-          // noop; จะไปใช้ fallback
-        }
-      }
-
-      // 2) fallback -> /visible (ต้องมี allowedBranchIds เพื่อกรอง)
-      const rVis = await fetch('/api/branches/visible', { cache: 'no-store' });
-      const dVis = await rVis.json();
-      if (!rVis.ok || !dVis?.ok) throw new Error(dVis?.error || `HTTP ${rVis.status}`);
-
-      const allVisible: VisibleBranch[] = Array.isArray(dVis.branches) ? dVis.branches : [];
-      if (!allowedBranchIds || allowedBranchIds.length === 0) {
-        // เพื่อความปลอดภัย: ถ้าไม่รู้สิทธิที่แน่ชัด อย่าโชว์อะไรเลย
-        return {};
-      }
-      const allow = new Set(allowedBranchIds);
-      const filtered = allVisible.filter((b) => allow.has(b.id));
-      return toRecord(filtered);
-    },
-    staleTime: 5 * 60_000,
-  });
-
-  const rawItems = React.useMemo(
-    () =>
-      Object.entries(data ?? {}).map(([id, name]) => ({
-        id,
-        name: String(name ?? id),
+      (branches ?? []).map((b) => ({
+        id: b.branchId,
+        name: String(b.branchName ?? b.branchId),
       })),
-    [data]
+    [branches]
   );
 
-  // intersect อีกชั้น (กันกรณี fallback มาจาก /visible)
-  const items = React.useMemo(() => {
+  // ถ้ามี allowedBranchIds ให้ intersect อีกรอบ (กัน edge case จาก upstream)
+  const items = React.useMemo<VisibleItem[]>(() => {
     if (!allowedBranchIds || allowedBranchIds.length === 0) return rawItems;
     const allow = new Set(allowedBranchIds);
     return rawItems.filter((b) => allow.has(b.id));
   }, [rawItems, allowedBranchIds]);
 
-  // ตั้งค่า default หรือ auto-correct ถ้าค่าเดิมไม่มีสิทธิแล้ว
+  // ตั้งค่า default หรือแก้ให้ถูกต้องถ้าค่าเก่าหลุดสิทธิ์
   React.useEffect(() => {
-    if (isLoading) return;
+    if (loading) return;
     if (!items.length) return;
 
-    const saved = typeof window !== 'undefined' ? localStorage.getItem('selectedBranchId') : null;
+    const saved =
+      typeof window !== 'undefined' ? localStorage.getItem('selectedBranchId') : null;
     const hasSaved = saved && items.some((b) => b.id === saved);
 
     if (!selectedBranchId || !items.some((b) => b.id === selectedBranchId)) {
@@ -109,12 +65,14 @@ export default function BranchSelect({
       setSelectedBranchId(next);
       if (typeof window !== 'undefined') localStorage.setItem('selectedBranchId', next);
     }
-  }, [isLoading, items, selectedBranchId, setSelectedBranchId]);
+  }, [loading, items, selectedBranchId, setSelectedBranchId]);
 
-  const currentName = items.find((x) => x.id === selectedBranchId)?.name || 'Select branch';
+  const currentName =
+    items.find((x) => x.id === selectedBranchId)?.name ||
+    (loading ? 'Loading…' : error ? 'Error' : 'Select branch');
 
   const choose = (id: string) => {
-    // กันผู้ใช้เลือกสาขาที่ไม่มีสิทธิ
+    // กันผู้ใช้เลือกสาขาที่ไม่มีสิทธิ์
     if (allowedBranchIds && allowedBranchIds.length > 0 && !allowedBranchIds.includes(id)) {
       console.warn('Forbidden branchId selected:', id);
       return;
@@ -126,6 +84,7 @@ export default function BranchSelect({
     setSelectedBranchId(id);
     if (typeof window !== 'undefined') localStorage.setItem('selectedBranchId', id);
     setOpen(false);
+
     // รีเฟรชข้อมูลที่อาศัยสาขา
     qc.invalidateQueries({ queryKey: ['inventory'] });
     qc.invalidateQueries({ queryKey: ['orders'] });
@@ -138,7 +97,13 @@ export default function BranchSelect({
         <Button variant="outline" className="w-full justify-between" aria-label="Select branch">
           <span className="flex items-center gap-2">
             <Building2 className="h-4 w-4" />
-            <span className="truncate">{error ? 'Error loading branches' : currentName}</span>
+            <span className="truncate">
+              {error
+                ? 'Missing or insufficient permissions.'
+                : loading
+                ? 'Loading branches…'
+                : currentName}
+            </span>
           </span>
           <ChevronsUpDown className="h-4 w-4 opacity-60" />
         </Button>
@@ -150,9 +115,13 @@ export default function BranchSelect({
           <CommandList>
             {error ? (
               <CommandEmpty>Missing or insufficient permissions.</CommandEmpty>
+            ) : loading ? (
+              <CommandEmpty>Loading…</CommandEmpty>
+            ) : items.length === 0 ? (
+              <CommandEmpty>No branches found.</CommandEmpty>
             ) : (
               <>
-                <CommandEmpty>No branches found.</CommandEmpty>
+                <CommandEmpty>No results.</CommandEmpty>
                 <CommandGroup heading="My Branches">
                   {items.map((b) => (
                     <CommandItem
