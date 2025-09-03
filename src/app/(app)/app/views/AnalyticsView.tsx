@@ -1,315 +1,913 @@
-"use client";
+'use client';
 
-import * as React from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useEffect, useMemo, useRef, useState } from 'react';
+
+// UI
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from 'components/ui/card';
+import { Button } from 'components/ui/button';
+import { Badge } from 'components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from 'components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from 'components/ui/tabs';
 import {
+  BarChart as RBarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip as RTooltip,
   ResponsiveContainer,
   LineChart,
   Line,
-  CartesianGrid,
-  XAxis,
-  YAxis,
-  Tooltip as ReTooltip,
-  BarChart,
-  Bar,
   PieChart,
   Pie,
-  Legend,
   Cell,
+  AreaChart,
+  Area,
+  ScatterChart,
+  Scatter,
+  ComposedChart,
 } from 'recharts';
-import { motion } from 'framer-motion';
 import {
-  PackageSearch,
-  Boxes,
-  ArrowDownUp,
-  Building2,
-  AlertTriangle,
   TrendingUp,
-  Truck,
-  Factory,
+  DollarSign,
+  Package,
+  ShoppingCart,
+  Target,
+  AlertTriangle,
   Clock,
-  Users,
+  Calendar,
+  MapPin,
+  ArrowUpRight,
+  ArrowDownRight,
+  Download,
+  BarChart3,
 } from 'lucide-react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Input } from '@/components/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Skeleton } from '@/components/ui/skeleton';
 
-// ----------------------------------
-// Types (match existing /api/analytics/summary)
-// ----------------------------------
-interface SummaryData {
+// contexts
+import { useBranch } from 'contexts/BranchContext';
+
+// types
+import type { GroupedProduct } from 'types/inventory';
+
+/* ===================== API types (ให้ตรงกับ /api/analytics/summary เวอร์ชันล่าสุด) ===================== */
+type SummaryData = {
   totalInventoryValue: number;
   pendingTransfers: number;
   branchCount: number;
   totalUsers: number;
-}
+};
 
-interface ChartData { name: string; value: number; [k: string]: any }
+type ChartDatum = { name: string; value: number };
+type TransfersDatum = { name: string; inbound?: number; outbound?: number };
 
-interface SummaryResponse {
+type SummaryResponse = {
   ok: boolean;
   summaryData: SummaryData;
-  inventoryByBranchData: ChartData[];
-  transfersOverTimeData: { name: string; inbound?: number; outbound?: number }[];
-  productCategoriesData: ChartData[];
+  inventoryByBranchData: ChartDatum[];
+  transfersOverTimeData: TransfersDatum[];
+  productCategoriesData: ChartDatum[]; // grouped by brand/category
+  error?: string;
+};
+
+/* ===================== Utils ===================== */
+const THB = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 });
+const NUM = new Intl.NumberFormat('th-TH');
+const PIE_COLORS = ['#0ea5e9', '#10b981', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#84cc16', '#64748b'];
+
+function asArray<T = any>(x: any): T[] {
+  return Array.isArray(x) ? x : [];
 }
 
-// ----------------------------------
-// Formatting helpers
-// ----------------------------------
-const FORMAT_THB = new Intl.NumberFormat('th-TH', { style: 'currency', currency: 'THB', maximumFractionDigits: 0 });
-const FORMAT_NUM = new Intl.NumberFormat('th-TH');
-const PIE_COLORS = ['#4f46e5', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4', '#a855f7', '#84cc16'];
+function toFromTo(range: '1month' | '3months' | '6months' | '1year') {
+  const today = new Date();
+  const to = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const daysMap: Record<string, number> = { '1month': 30, '3months': 90, '6months': 180, '1year': 365 };
+  const d = daysMap[range] ?? 180;
+  const from = new Date(to);
+  from.setDate(to.getDate() - d);
+  const fmt = (x: Date) => x.toISOString().slice(0, 10);
+  return { from: fmt(from), to: fmt(to) };
+}
 
-// ----------------------------------
-// Component
-// ----------------------------------
-export default function analyticview() {
-  const [range, setRange] = React.useState<'7d'|'30d'|'90d'|'ytd'>('30d');
-  const [search, setSearch] = React.useState('');
+// map UI range -> API range param
+function toApiRange(range: '1month' | '3months' | '6months' | '1year'): '7d' | '30d' | '90d' | 'ytd' {
+  if (range === '1month') return '30d';
+  if (range === '3months') return '90d';
+  if (range === '6months') return '90d'; // backend ยังไม่รองรับ 180d: ใช้ใกล้สุด
+  return 'ytd'; // '1year' -> YTD
+}
 
-  const { data, isLoading, isError, refetch } = useQuery<SummaryResponse>({
-    queryKey: ['analytics-summary', range],
-    queryFn: async () => {
-      const params = new URLSearchParams({ range });
-      const r = await fetch(`/api/analytics/summary?${params.toString()}`, { cache: 'no-store' });
-      const d = await r.json();
-      if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
-      return d as SummaryResponse;
-    },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
+// ------- helpers from inventory props (fallback) -------
+function calcInventoryValue(inventory: GroupedProduct[]) {
+  return asArray(inventory).reduce((sum, p) => {
+    return (
+      sum +
+      asArray(p?.branches).reduce((bs, b: any) => {
+        return (
+          bs +
+          asArray(b?.sizes).reduce((ss, s: any) => {
+            return (
+              ss +
+              asArray(s?.dots).reduce((ds, d: any) => {
+                const price = Number(d?.promoPrice ?? d?.basePrice ?? 0);
+                return ds + Number(d?.qty || 0) * price;
+              }, 0)
+            );
+          }, 0)
+        );
+      }, 0)
+    );
+  }, 0);
+}
+
+function monthsBetween(a: Date, b: Date) {
+  return (a.getUTCFullYear() - b.getUTCFullYear()) * 12 + (a.getUTCMonth() - b.getUTCMonth());
+}
+function estimateDateFromWWYY(code: string) {
+  const m = /^(\d{2})(\d{2})$/.exec(code);
+  if (!m) return null;
+  const week = Number(m[1]);
+  const year = 2000 + Number(m[2]);
+  const base = new Date(Date.UTC(year, 0, 1));
+  base.setUTCDate(1 + (week - 1) * 7 + 3);
+  return base;
+}
+function getDotCode(d: any): string {
+  if (typeof d?.dotCode === 'string') return d.dotCode;
+  if (typeof d?.dot === 'string') return d.dot;
+  if (typeof d?.code === 'string') return d.code;
+  return '';
+}
+
+function buildDotAgingFromInventory(inventory: GroupedProduct[]) {
+  const now = new Date();
+  const buckets = { '0-6 months': 0, '6-12 months': 0, '12-18 months': 0, '18+ months': 0 };
+  asArray(inventory).forEach((p) => {
+    asArray((p as any)?.branches).forEach((b: any) => {
+      asArray(b?.sizes).forEach((s: any) => {
+        asArray(s?.dots).forEach((d: any) => {
+          const qty = Number(d?.qty || 0);
+          const dt = estimateDateFromWWYY(getDotCode(d));
+          if (!dt) return;
+          const m = monthsBetween(now, dt);
+          if (m <= 6) buckets['0-6 months'] += qty;
+          else if (m <= 12) buckets['6-12 months'] += qty;
+          else if (m <= 18) buckets['12-18 months'] += qty;
+          else buckets['18+ months'] += qty;
+        });
+      });
+    });
+  });
+  return Object.entries(buckets).map(([ageRange, units]) => ({ ageRange, units, percentage: 0, value: 0 }));
+}
+
+function buildBranchValueFromInventory(inventory: GroupedProduct[]) {
+  const map = new Map<string, number>();
+  asArray(inventory).forEach((p) => {
+    asArray((p as any)?.branches).forEach((b: any) => {
+      const branchName = b?.branchName || 'Unknown';
+      let acc = 0;
+      asArray(b?.sizes).forEach((s: any) => {
+        asArray(s?.dots).forEach((d: any) => {
+          const price = Number(d?.promoPrice ?? d?.basePrice ?? 0);
+          acc += Number(d?.qty || 0) * price;
+        });
+      });
+      map.set(branchName, (map.get(branchName) || 0) + acc);
+    });
+  });
+  return Array.from(map.entries()).map(([branch, value]) => ({
+    branch,
+    revenue: value,
+    orders: 0,
+    inventory: 0,
+    utilization: 0,
+  }));
+}
+
+// กรอง inventory ให้เหลือเฉพาะสาขาที่เลือก
+function filterInventoryByBranch(inventory: GroupedProduct[], branchId?: string | null) {
+  if (!branchId) return inventory;
+  return asArray(inventory).map((p) => {
+    const branches = asArray((p as any)?.branches).filter(
+      (b: any) => b?.branchId === branchId || b?.id === branchId
+    );
+    return { ...p, branches };
+  });
+}
+
+// ---------- build fallback SummaryResponse เมื่อ API ล่ม ----------
+function buildFallbackSummaryFromInventory(
+  inventory: GroupedProduct[],
+  from: string,
+  to: string
+): SummaryResponse {
+  const today = new Date(to);
+  const transfersOverTimeData: TransfersDatum[] = Array.from({ length: 6 }).map((_, i) => {
+    const d = new Date(today);
+    d.setMonth(today.getMonth() - (5 - i));
+    return { name: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, inbound: 0, outbound: 0 };
   });
 
-  const summary = data?.summaryData;
-  const invByBranch = data?.inventoryByBranchData ?? [];
-  const transfersSeries = data?.transfersOverTimeData ?? [];
-  const pieCats = data?.productCategoriesData ?? [];
+  // สร้าง category value จากมูลค่ารวม (proxy)
+  const catMap = new Map<string, number>();
+  asArray(inventory).forEach((p) => {
+    const cat = (p as any)?.name?.split(' ')?.[0] || 'Unknown';
+    let totalValue = 0;
+    asArray((p as any)?.branches).forEach((b: any) => {
+      asArray(b?.sizes).forEach((s: any) => {
+        asArray(s?.dots).forEach((d: any) => {
+          const price = Number(d?.promoPrice ?? d?.basePrice ?? 0);
+          totalValue += Number(d?.qty || 0) * price;
+        });
+      });
+    });
+    catMap.set(cat, (catMap.get(cat) || 0) + totalValue);
+  });
 
+  const productCategoriesData: ChartDatum[] = Array.from(catMap.entries()).map(([name, value]) => ({
+    name,
+    value: Math.round(value),
+  }));
+
+  return {
+    ok: true,
+    summaryData: {
+      totalInventoryValue: Math.round(calcInventoryValue(inventory)),
+      pendingTransfers: 0,
+      branchCount: 1,
+      totalUsers: 0,
+    },
+    transfersOverTimeData,
+    productCategoriesData,
+    inventoryByBranchData: buildBranchValueFromInventory(inventory).map((b) => ({ name: b.branch, value: b.revenue })),
+  };
+}
+
+/* ===================== Props ===================== */
+interface AnalyticsProps {
+  inventory: GroupedProduct[];
+  loading: boolean;
+}
+
+/* --- helper: branch label --- */
+function makeBranchLabel(selectedBranch: any, fallbackId: string | null) {
   return (
-    <div className="min-h-[100dvh] w-full p-4 md:p-6 lg:p-8">
+    selectedBranch?.name ??
+    selectedBranch?.branchName ??
+    selectedBranch?.displayName ??
+    selectedBranch?.title ??
+    selectedBranch?.code ??
+    fallbackId ??
+    'Current branch'
+  ) as string;
+}
+
+export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
+  const { selectedBranch, selectedBranchId, loading: branchLoading } = useBranch();
+
+  const activeBranchId = selectedBranchId ?? null;
+  const branchLabel = useMemo(() => makeBranchLabel(selectedBranch, activeBranchId), [selectedBranch, activeBranchId]);
+
+  // inventory ที่ “กรองตามสาขา”
+  const scopedInventory = useMemo(() => filterInventoryByBranch(inventory, activeBranchId), [inventory, activeBranchId]);
+
+  const [timeRange, setTimeRange] = useState<'1month' | '3months' | '6months' | '1year'>('6months');
+  const { from, to } = useMemo(() => toFromTo(timeRange), [timeRange]);
+
+  const [apiData, setApiData] = useState<SummaryResponse | null>(null);
+  const [apiLoading, setApiLoading] = useState(false);
+  const [apiError, setApiError] = useState<string | null>(null);
+
+  // ===== ยิง API ตาม branch + range และกันยิงซ้ำด้วย key =====
+  const apiRange = useMemo(() => toApiRange(timeRange), [timeRange]);
+  const apiKey = useMemo(
+    () => `/api/analytics/summary?branchId=${encodeURIComponent(activeBranchId ?? '')}&range=${apiRange}`,
+    [activeBranchId, apiRange]
+  );
+  const lastFetchedKeyRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!activeBranchId) {
+      setApiError('ยังไม่ได้เลือกสาขา');
+      const fb = buildFallbackSummaryFromInventory(scopedInventory, from, to);
+      setApiData(fb);
+      return;
+    }
+
+    if (lastFetchedKeyRef.current === apiKey) return;
+
+    const controller = new AbortController();
+    let cancelled = false;
+
+    (async () => {
+      try {
+        setApiLoading(true);
+        setApiError(null);
+
+        const r = await fetch(apiKey, { cache: 'no-store', signal: controller.signal });
+        const d = await r.json().catch(() => null);
+
+        if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
+
+        if (!cancelled) {
+          setApiData(d as SummaryResponse);
+          lastFetchedKeyRef.current = apiKey;
+        }
+      } catch (e: any) {
+        if (!cancelled) {
+          setApiError(e?.message || 'internal_server_error');
+          setApiData(buildFallbackSummaryFromInventory(scopedInventory, from, to));
+          lastFetchedKeyRef.current = apiKey;
+        }
+      } finally {
+        if (!cancelled) setApiLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+    };
+  }, [apiKey, activeBranchId, scopedInventory, from, to]);
+
+  /* ========== Map API -> UI model ========== */
+  const summary = apiData?.summaryData;
+
+  // Orders/Revenue proxy จาก inbound+outbound
+  const revenueData = useMemo(() => {
+    const src = apiData?.transfersOverTimeData ?? [];
+    return src.map((x) => {
+      const orders = Number(x.inbound || 0) + Number(x.outbound || 0);
+      return { month: x.name, revenue: orders, orders, avgOrderValue: 0 };
+    });
+  }, [apiData]);
+
+  // Category: ใช้ value เป็นมูลค่า
+  const categoryAnalysis = useMemo(() => {
+    const src = apiData?.productCategoriesData ?? [];
+    return src.map((c, i) => ({
+      name: c.name,
+      revenue: c.value,
+      units: c.value, // ไม่มี units จริงจาก API—ใช้ value เป็น proxy
+      margin: undefined as number | undefined,
+      color: PIE_COLORS[i % PIE_COLORS.length],
+    }));
+  }, [apiData]);
+
+  // Branches tab: แสดงเฉพาะสาขาที่เลือก
+  const branchPerformance = useMemo(() => {
+    if (apiData?.inventoryByBranchData?.length) {
+      const filtered = apiData.inventoryByBranchData.filter((b) => b.name === branchLabel);
+      const src = (filtered.length ? filtered : apiData.inventoryByBranchData).slice(0, 1);
+      return src.map((b) => ({
+        branch: b.name,
+        revenue: b.value,
+        orders: 0,
+        inventory: 0,
+        utilization: 0,
+      }));
+    }
+    // client fallback: จาก scopedInventory (มีสาขาเดียว)
+    return buildBranchValueFromInventory(scopedInventory);
+  }, [apiData, scopedInventory, branchLabel]);
+
+  // ไม่มีข้อมูล movement ราย product จาก API—ปล่อยว่าง
+  const inventoryTurnover: { product: string; turnover: number; daysStock: number; performance: string }[] = [];
+  const topSellingProducts: { name: string; units: number; revenue: number; growth: number }[] = [];
+
+  // DOT aging ด้วย scopedInventory
+  const dotCodeAging = useMemo(() => buildDotAgingFromInventory(scopedInventory), [scopedInventory]);
+
+  // KPI
+  const totalInventoryValue = useMemo(
+    () => Math.round(summary?.totalInventoryValue ?? calcInventoryValue(scopedInventory)),
+    [summary, scopedInventory]
+  );
+  const totalOrders = useMemo(() => revenueData.reduce((s, r) => s + (r.orders || 0), 0), [revenueData]);
+  const totalRevenue = useMemo(() => revenueData.reduce((s, r) => s + (r.revenue || 0), 0), [revenueData]);
+  const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
+
+  // “Out of Stock / skuCount” จาก client (สcope ตาม branch)
+  const skuAndOOS = useMemo(() => {
+    let sku = 0,
+      oos = 0;
+    asArray(scopedInventory).forEach((p) => {
+      asArray((p as any)?.branches).forEach((b: any) => {
+        asArray(b?.sizes).forEach((s: any) => {
+          asArray(s?.dots).forEach((d: any) => {
+            sku += 1;
+            if (Number(d?.qty || 0) <= 0) oos += 1;
+          });
+        });
+      });
+    });
+    return { sku, oos };
+  }, [scopedInventory]);
+
+  // รวม inbound/outbound ช่วงที่เลือก
+  const inboundSum = useMemo(
+    () => (apiData?.transfersOverTimeData ?? []).reduce((acc, x) => acc + (x.inbound || 0), 0),
+    [apiData]
+  );
+  const outboundSum = useMemo(
+    () => (apiData?.transfersOverTimeData ?? []).reduce((acc, x) => acc + (x.outbound || 0), 0),
+    [apiData]
+  );
+
+  // ---------- Loading ----------
+  if (loading || branchLoading || apiLoading) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-center">
+          <BarChart3 className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
+          <p className="text-muted-foreground">Loading analytics...</p>
+        </div>
+      </div>
+    );
+  }
+
+  // ---------- UI ----------
+  return (
+    <div className="space-y-6">
+      {/* API error banner */}
+      {apiError && (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
+          โหลดข้อมูลจาก API ไม่สำเร็จ: <span className="font-medium">{apiError}</span> — กำลังแสดงข้อมูลจากสต็อกจริงของสาขาที่เลือกแทน
+        </div>
+      )}
+
       {/* Header */}
-      <div className="mb-6 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-        <div className="flex items-center gap-3">
-          <PackageSearch className="h-7 w-7" />
-          <div>
-            <h1 className="text-2xl font-semibold leading-tight">Inventory Analytics</h1>
-            <p className="text-sm text-muted-foreground">ภาพรวมสต็อก • ช่วงเวลา {range.toUpperCase()}</p>
-          </div>
+      <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
+        <div>
+          <h1>Analytics &amp; Reports</h1>
+          <p className="text-muted-foreground">Deep insights into your tire business performance</p>
+          <p className="text-xs text-muted-foreground">
+            ช่วงเวลา: {from} – {to}
+          </p>
         </div>
-        <div className="flex flex-1 flex-col gap-3 md:flex-row md:items-center md:justify-end">
-          <div className="flex w-full max-w-md items-center gap-2">
-            <Input placeholder="ค้นหา SKU / ชื่อสินค้า" value={search} onChange={(e)=>setSearch(e.target.value)} />
-            <Select value={range} onValueChange={(v:any)=>setRange(v)}>
-              <SelectTrigger className="w-[120px]"><SelectValue placeholder="ช่วงเวลา" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="7d">7 วัน</SelectItem>
-                <SelectItem value="30d">30 วัน</SelectItem>
-                <SelectItem value="90d">90 วัน</SelectItem>
-                <SelectItem value="ytd">ตั้งแต่ต้นปี</SelectItem>
-              </SelectContent>
-            </Select>
-            <Button variant="outline" onClick={()=>refetch()}>รีเฟรช</Button>
-          </div>
+
+        <div className="flex items-center gap-2">
+          {branchLabel && (
+            <Badge variant="secondary">
+              <MapPin className="mr-1 h-3 w-3" />
+              {branchLabel}
+            </Badge>
+          )}
+
+          <Select value={timeRange} onValueChange={(v) => setTimeRange(v as any)}>
+            <SelectTrigger className="w-[160px]">
+              <SelectValue placeholder="Last 6 Months" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="1month">Last Month</SelectItem>
+              <SelectItem value="3months">Last 3 Months</SelectItem>
+              <SelectItem value="6months">Last ~3–6 Months</SelectItem>
+              <SelectItem value="1year">Year to Date</SelectItem>
+            </SelectContent>
+          </Select>
+
+          <Button
+            variant="outline"
+            onClick={() => {
+              const rows: string[] = [];
+              rows.push(`Branch,${branchLabel}`);
+              rows.push(`Period,${from} to ${to}`);
+              if (summary) {
+                rows.push(`totalInventoryValue,${summary.totalInventoryValue}`);
+                rows.push(`pendingTransfers,${summary.pendingTransfers}`);
+                rows.push(`branchCount,${summary.branchCount}`);
+                rows.push(`totalUsers,${summary.totalUsers}`);
+              }
+              rows.push(`skuCount,${skuAndOOS.sku}`);
+              rows.push(`outOfStockCount,${skuAndOOS.oos}`);
+              rows.push(`inboundTotal,${inboundSum}`);
+              rows.push(`outboundTotal,${outboundSum}`);
+
+              rows.push('');
+              rows.push('TransfersOverTime,day,inbound,outbound');
+              (apiData?.transfersOverTimeData ?? []).forEach((d) =>
+                rows.push(`,${d.name},${d.inbound || 0},${d.outbound || 0}`)
+              );
+
+              rows.push('');
+              rows.push('Category,name,value');
+              (apiData?.productCategoriesData ?? []).forEach((d) => rows.push(`,${d.name},${d.value}`));
+
+              rows.push('');
+              rows.push('InventoryByBranch,name,value');
+              (apiData?.inventoryByBranchData ?? []).forEach((d) => rows.push(`,${d.name},${d.value}`));
+
+              const blob = new Blob([rows.join('\n')], { type: 'text/csv;charset=utf-8;' });
+              const url = URL.createObjectURL(blob);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `analytics_${activeBranchId ?? 'branch'}_${from}_${to}.csv`;
+              a.click();
+              URL.revokeObjectURL(url);
+            }}
+          >
+            <Download className="h-4 w-4 mr-2" />
+            Export
+          </Button>
         </div>
       </div>
 
-      {/* KPI Row */}
-      <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+      {/* KPIs */}
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>มูลค่าสต็อกรวม</CardDescription>
-            <CardTitle className="flex items-center gap-2 text-2xl">
-              {isLoading ? <Skeleton className="h-7 w-32" /> : FORMAT_THB.format(summary?.totalInventoryValue ?? 0)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><TrendingUp className="h-4 w-4" /> ค่าประมาณ ณ ปัจจุบัน</CardContent>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Total Revenue</p>
+                <p className="text-2xl font-medium">{NUM.format(totalRevenue)}</p>
+              </div>
+              <DollarSign className="h-8 w-8 text-chart-1" />
+            </div>
+            <div className="flex items-center mt-2 text-sm">
+              <ArrowUpRight className="h-4 w-4 text-green-600 mr-1" />
+              <span className="text-muted-foreground">from transfers (count)</span>
+            </div>
+          </CardContent>
         </Card>
 
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>คำขอโอนสินค้ารออนุมัติ</CardDescription>
-            <CardTitle className="text-2xl">
-              {isLoading ? <Skeleton className="h-7 w-12" /> : FORMAT_NUM.format(summary?.pendingTransfers ?? 0)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><Truck className="h-4 w-4" /> โอนระหว่างสาขา</CardContent>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Avg Order Value</p>
+                <p className="text-2xl font-medium">{NUM.format(Math.round(avgOrderValue))}</p>
+              </div>
+              <ShoppingCart className="h-8 w-8 text-chart-2" />
+            </div>
+            <div className="flex items-center mt-2 text-sm">
+              <ArrowUpRight className="h-4 w-4 text-green-600 mr-1" />
+              <span className="text-muted-foreground">estimated</span>
+            </div>
+          </CardContent>
         </Card>
 
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>จำนวนสาขา</CardDescription>
-            <CardTitle className="flex items-center gap-2 text-2xl">
-              {isLoading ? <Skeleton className="h-7 w-10" /> : FORMAT_NUM.format(summary?.branchCount ?? 0)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><Building2 className="h-4 w-4" /> Branches</CardContent>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Inventory Value</p>
+                <p className="text-2xl font-medium">{THB.format(Math.round(totalInventoryValue))}</p>
+              </div>
+              <Package className="h-8 w-8 text-chart-3" />
+            </div>
+            <div className="flex items-center mt-2 text-sm">
+              <ArrowDownRight className="h-4 w-4 text-muted-foreground mr-1" />
+              <span className="text-muted-foreground">from current inventory</span>
+            </div>
+          </CardContent>
         </Card>
 
         <Card>
-          <CardHeader className="pb-2">
-            <CardDescription>ผู้ใช้งาน</CardDescription>
-            <CardTitle className="text-2xl">
-              {isLoading ? <Skeleton className="h-7 w-10" /> : FORMAT_NUM.format(summary?.totalUsers ?? 0)}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="pt-0 text-xs text-muted-foreground flex items-center gap-2"><Users className="h-4 w-4" /> รวมทั้งหมด</CardContent>
+          <CardContent className="p-4">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-muted-foreground">Total Orders</p>
+                <p className="text-2xl font-medium">{NUM.format(totalOrders)}</p>
+              </div>
+              <Target className="h-8 w-8 text-chart-4" />
+            </div>
+            <div className="flex items-center mt-2 text-sm">
+              <ArrowUpRight className="h-4 w-4 text-muted-foreground mr-1" />
+              <span className="text-muted-foreground">count of movements</span>
+            </div>
+          </CardContent>
         </Card>
       </div>
 
-      {/* Main Grid */}
-      <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
-        {/* Left: Charts */}
-        <div className="xl:col-span-2 space-y-4">
-          <Card>
-            <CardHeader className="pb-0">
-              <CardTitle className="text-xl flex items-center gap-2"><Boxes className="h-5 w-5" /> มูลค่าคงคลังตามสาขา</CardTitle>
-              <CardDescription>รวมมูลค่าสินค้าต่อสาขา</CardDescription>
-            </CardHeader>
-            <CardContent className="pt-4 h-[340px]">
-              {isLoading ? (
-                <Skeleton className="h-full" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={invByBranch} margin={{ left: 4, right: 4, top: 8, bottom: 40 }}>
-                    <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" angle={-20} textAnchor="end" interval={0} height={60} tick={{ fontSize: 12 }} />
-                    <YAxis tick={{ fontSize: 12 }} />
-                    <ReTooltip />
-                    <Bar dataKey="value" radius={[6,6,0,0]} />
-                  </BarChart>
-                </ResponsiveContainer>
-              )}
-            </CardContent>
-          </Card>
+      {/* Tabs */}
+      <Tabs defaultValue="revenue" className="w-full">
+        <TabsList className="grid w-full grid-cols-5">
+          <TabsTrigger value="revenue">Revenue</TabsTrigger>
+          <TabsTrigger value="inventory">Inventory</TabsTrigger>
+          <TabsTrigger value="branches">Branches</TabsTrigger>
+          <TabsTrigger value="products">Products</TabsTrigger>
+          <TabsTrigger value="pricing">Pricing</TabsTrigger>
+        </TabsList>
 
-          <Card>
-            <CardHeader className="pb-0">
-              <CardTitle className="text-xl flex items-center gap-2"><ArrowDownUp className="h-5 w-5" /> Inbound / Outbound</CardTitle>
-              <CardDescription>ปริมาณเคลื่อนไหวสินค้า ({range.toUpperCase()})</CardDescription>
-            </CardHeader>
-            <CardContent className="pt-4 h-[300px]">
-              {isLoading ? (
-                <Skeleton className="h-full" />
-              ) : (
-                <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={transfersSeries}>
+        {/* Revenue */}
+        <TabsContent value="revenue" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Revenue Trends</CardTitle>
+                <CardDescription>Using inbound+outbound counts as proxy</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={300}>
+                  <AreaChart data={revenueData}>
                     <CartesianGrid strokeDasharray="3 3" />
-                    <XAxis dataKey="name" />
+                    <XAxis dataKey="month" />
                     <YAxis />
-                    <ReTooltip />
-                    <Line type="monotone" dataKey="inbound" strokeWidth={2} dot={false} />
-                    <Line type="monotone" dataKey="outbound" strokeWidth={2} dot={false} />
-                    <Legend />
-                  </LineChart>
+                    <RTooltip />
+                    <Area type="monotone" dataKey="revenue" />
+                  </AreaChart>
                 </ResponsiveContainer>
-              )}
-            </CardContent>
-          </Card>
-        </div>
+              </CardContent>
+            </Card>
 
-        {/* Right: Categories Pie + Low Stock */}
-        <div className="space-y-4">
+            <Card>
+              <CardHeader>
+                <CardTitle>Order Volume &amp; AOV</CardTitle>
+                <CardDescription>Orders count vs average order value</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={300}>
+                  <ComposedChart data={revenueData}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="month" />
+                    <YAxis yAxisId="left" />
+                    <YAxis yAxisId="right" orientation="right" />
+                    <RTooltip />
+                    <Bar yAxisId="left" dataKey="orders" />
+                    <Line yAxisId="right" type="monotone" dataKey="avgOrderValue" />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
           <Card>
-            <CardHeader className="pb-0">
-              <CardTitle className="text-xl flex items-center gap-2"><Factory className="h-5 w-5" /> สัดส่วนตามหมวดสินค้า</CardTitle>
-              <CardDescription>ค่าประมาณจากคลังสินค้า</CardDescription>
+            <CardHeader>
+              <CardTitle>Category Performance</CardTitle>
+              <CardDescription>Value by category/brand</CardDescription>
             </CardHeader>
-            <CardContent className="pt-4 h-[300px]">
-              {isLoading ? (
-                <Skeleton className="h-full" />
-              ) : (
-                <ResponsiveContainer>
+            <CardContent>
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                <ResponsiveContainer width="100%" height={300}>
                   <PieChart>
-                    <Pie data={pieCats} dataKey="value" nameKey="name" innerRadius={50} outerRadius={90}>
-                      {pieCats.map((_, i) => (
-                        <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />
+                    <Pie
+                      data={categoryAnalysis}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={60}
+                      outerRadius={120}
+                      paddingAngle={5}
+                      dataKey="revenue"
+                    >
+                      {categoryAnalysis.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
                       ))}
                     </Pie>
-                    <Legend />
+                    <RTooltip />
                   </PieChart>
                 </ResponsiveContainer>
-              )}
+
+                <div className="space-y-4">
+                  {categoryAnalysis.map((category, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
+                      <div className="flex items-center space-x-3">
+                        <div className="w-3 h-3 rounded-full" style={{ backgroundColor: category.color }} />
+                        <div>
+                          <p className="font-medium">{category.name}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {THB.format(Math.round(category.revenue || 0))}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </CardContent>
           </Card>
+        </TabsContent>
+
+        {/* Inventory */}
+        <TabsContent value="inventory" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Inventory Turnover</CardTitle>
+                <CardDescription>Top movers (pending backend)</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  {inventoryTurnover.length === 0 && (
+                    <div className="text-sm text-muted-foreground">No movement breakdown from API yet.</div>
+                  )}
+                  {inventoryTurnover.map((item, index) => (
+                    <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
+                      <div>
+                        <p className="font-medium">{item.product}</p>
+                        <p className="text-sm text-muted-foreground">{item.daysStock} days of stock</p>
+                      </div>
+                      <div className="text-right">
+                        <p className="font-medium">{item.turnover}x</p>
+                        <Badge
+                          variant={
+                            item.performance === 'excellent'
+                              ? 'default'
+                              : item.performance === 'good'
+                              ? 'secondary'
+                              : item.performance === 'average'
+                              ? 'outline'
+                              : 'destructive'
+                          }
+                          className="text-xs"
+                        >
+                          {item.performance}
+                        </Badge>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>DOT Code Aging Analysis</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={220}>
+                  <RBarChart data={dotCodeAging} layout="horizontal">
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis type="number" />
+                    <YAxis dataKey="ageRange" type="category" width={100} />
+                    <RTooltip />
+                    <Bar dataKey="units" />
+                  </RBarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
 
           <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xl flex items-center gap-2"><AlertTriangle className="h-5 w-5" /> สินค้าใกล้หมด</CardTitle>
-              <CardDescription>Top 5 ตามเกณฑ์ minQty (placeholder)</CardDescription>
+            <CardHeader>
+              <CardTitle>Critical Stock Alerts</CardTitle>
+              <CardDescription>รวมช่วงที่เลือก</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
-              {[{ sku:'SKU-001', name:'ตัวอย่างสินค้า A', qty:3, min:5 },{ sku:'SKU-014', name:'ตัวอย่างสินค้า B', qty:7, min:10 },{ sku:'SKU-221', name:'ตัวอย่างสินค้า C', qty:1, min:4 }].map((r)=> (
-                <div key={r.sku} className="flex items-center justify-between rounded-xl border p-3">
-                  <div>
-                    <div className="font-medium">{r.sku} <span className="text-muted-foreground">— {r.name}</span></div>
-                    <div className="text-xs text-muted-foreground">คงเหลือ {r.qty} / เกณฑ์ขั้นต่ำ {r.min}</div>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="border rounded-lg p-4 bg-red-50 dark:bg-red-900/10">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <AlertTriangle className="h-4 w-4 text-red-600" />
+                    <span className="text-sm font-medium text-red-600">Out of Stock</span>
                   </div>
-                  <Badge variant="destructive">เติมสต็อก</Badge>
+                  <p className="text-2xl font-semibold">{NUM.format(skuAndOOS.oos)}</p>
+                  <p className="text-xs text-muted-foreground">สินค้าในระบบที่จำนวนรวม ≤ 0</p>
                 </div>
-              ))}
+
+                <div className="border rounded-lg p-4 bg-yellow-50 dark:bg-yellow-900/10">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Clock className="h-4 w-4 text-yellow-600" />
+                    <span className="text-sm font-medium text-yellow-600">Pending Transfers</span>
+                  </div>
+                  <p className="text-2xl font-semibold">{NUM.format(summary?.pendingTransfers ?? 0)}</p>
+                  <p className="text-xs text-muted-foreground">คำขอย้ายสต็อกที่ยังรอดำเนินการ</p>
+                </div>
+
+                <div className="border rounded-lg p-4 bg-orange-50 dark:bg-orange-900/10">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <Calendar className="h-4 w-4 text-orange-600" />
+                    <span className="text-sm font-medium text-orange-600">Inbound / Outbound</span>
+                  </div>
+                  <p className="text-2xl font-semibold">
+                    {NUM.format(inboundSum)} / {NUM.format(outboundSum)}
+                  </p>
+                  <p className="text-xs text-muted-foreground">รวมเคลื่อนไหว (ช่วงที่เลือก)</p>
+                </div>
+              </div>
             </CardContent>
           </Card>
-        </div>
-      </div>
+        </TabsContent>
 
-      {/* Tables & Insights */}
-      <div className="mt-6 grid grid-cols-1 gap-4 xl:grid-cols-3">
-        <Card className="xl:col-span-2">
-          <CardHeader className="pb-0">
-            <CardTitle className="text-xl flex items-center gap-2"><Boxes className="h-5 w-5" /> SKU เคลื่อนไหวสูงสุด</CardTitle>
-            <CardDescription>Top movers by transfer volume (placeholder)</CardDescription>
-          </CardHeader>
-          <CardContent className="pt-4 overflow-x-auto">
-            <table className="min-w-[640px] w-full text-sm">
-              <thead>
-                <tr className="text-left text-muted-foreground">
-                  <th className="px-2 py-2 font-medium">SKU</th>
-                  <th className="px-2 py-2 font-medium">ชื่อสินค้า</th>
-                  <th className="px-2 py-2 font-medium">Inbound</th>
-                  <th className="px-2 py-2 font-medium">Outbound</th>
-                  <th className="px-2 py-2 font-medium">สาขาหลัก</th>
-                </tr>
-              </thead>
-              <tbody>
-                {[{sku:'SKU-001', name:'ตัวอย่างสินค้า A', in:120, out:95, branch:'สาขา 1'}, {sku:'SKU-014', name:'ตัวอย่างสินค้า B', in:90, out:110, branch:'สาขา 3'}, {sku:'SKU-221', name:'ตัวอย่างสินค้า C', in:60, out:70, branch:'สาขา 2'}].map((r)=> (
-                  <tr key={r.sku} className="border-t">
-                    <td className="px-2 py-2 font-medium">{r.sku}</td>
-                    <td className="px-2 py-2">{r.name}</td>
-                    <td className="px-2 py-2">{FORMAT_NUM.format(r.in)}</td>
-                    <td className="px-2 py-2">{FORMAT_NUM.format(r.out)}</td>
-                    <td className="px-2 py-2">{r.branch}</td>
-                  </tr>
+        {/* Branches */}
+        <TabsContent value="branches" className="space-y-6">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
+              <CardHeader>
+                <CardTitle>Branch Revenue Comparison</CardTitle>
+                <CardDescription>มูลค่าสต็อกต่อสาขา (ตามสาขาที่เลือก)</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={300}>
+                  <RBarChart data={branchPerformance}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="branch" />
+                    <YAxis />
+                    <RTooltip />
+                    <Bar dataKey="revenue" />
+                  </RBarChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle>Inventory Utilization</CardTitle>
+                <CardDescription>relative proxy per branch</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <ResponsiveContainer width="100%" height={300}>
+                  <ScatterChart data={branchPerformance}>
+                    <CartesianGrid strokeDasharray="3 3" />
+                    <XAxis dataKey="inventory" name="Inventory" />
+                    <YAxis dataKey="utilization" name="Utilization %" />
+                    <RTooltip cursor={{ strokeDasharray: '3 3' }} />
+                    <Scatter dataKey="utilization" />
+                  </ScatterChart>
+                </ResponsiveContainer>
+              </CardContent>
+            </Card>
+          </div>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>Branch Performance Metrics</CardTitle>
+              <CardDescription>รายละเอียดต่อสาขา</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {branchPerformance.map((branch, index) => (
+                  <div key={index} className="p-4 border rounded-lg">
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center space-x-2">
+                        <MapPin className="h-4 w-4 text-primary" />
+                        <h3 className="font-medium">{branch.branch}</h3>
+                      </div>
+                      <Badge variant={branch.utilization > 80 ? 'default' : 'secondary'}>
+                        {branch.utilization}% efficiency
+                      </Badge>
+                    </div>
+                    <div className="grid grid-cols-3 gap-4 text-sm">
+                      <div>
+                        <p className="text-muted-foreground">Inventory Value</p>
+                        <p className="font-medium">{THB.format(Math.round(branch.revenue))}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Orders</p>
+                        <p className="font-medium">{branch.orders}</p>
+                      </div>
+                      <div>
+                        <p className="text-muted-foreground">Inventory</p>
+                        <p className="font-medium">{branch.inventory} units</p>
+                      </div>
+                    </div>
+                  </div>
                 ))}
-              </tbody>
-            </table>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="pb-0">
-            <CardTitle className="text-xl flex items-center gap-2"><Clock className="h-5 w-5" /> สต็อกค้าง (Aging)</CardTitle>
-            <CardDescription>กลุ่มที่เกิน 90/180 วัน (placeholder)</CardDescription>
-          </CardHeader>
-          <CardContent className="pt-4 space-y-3">
-            {[{ bucket:'>180 วัน', items:24, value: 410000 }, { bucket:'90–180 วัน', items:52, value: 690000 }].map((r)=> (
-              <div key={r.bucket} className="flex items-center justify-between rounded-xl border p-3">
-                <div>
-                  <div className="font-medium">{r.bucket}</div>
-                  <div className="text-xs text-muted-foreground">{FORMAT_NUM.format(r.items)} รายการ • {FORMAT_THB.format(r.value)}</div>
-                </div>
-                <Button variant="ghost" size="sm">ดูรายการ</Button>
               </div>
-            ))}
-          </CardContent>
-        </Card>
-      </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
 
-      <p className="mt-6 text-center text-xs text-muted-foreground">Tip: หน้านี้ดึงข้อมูลจาก <code>/api/analytics/summary</code> และสามารถผูก Low Stock / Movers / Aging กับคิวรีจริงได้ภายหลัง</p>
+        {/* Products */}
+        <TabsContent value="products" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Top Selling Products</CardTitle>
+              <CardDescription>จากการเคลื่อนไหว (pending backend)</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {topSellingProducts.length === 0 && (
+                  <div className="text-sm text-muted-foreground">No product-level movement from API yet.</div>
+                )}
+                {topSellingProducts.map((product, index) => (
+                  <div key={index} className="flex items-center justify-between p-4 border rounded-lg">
+                    <div className="flex items-center space-x-4">
+                      <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">
+                        <span className="font-medium text-primary">#{index + 1}</span>
+                      </div>
+                      <div>
+                        <p className="font-medium">{product.name}</p>
+                        <p className="text-sm text-muted-foreground">{NUM.format(product.units)} units moved</p>
+                      </div>
+                    </div>
+                    <div className="text-right">
+                      <div className="flex items-center space-x-1">
+                        <TrendingUp className="h-3 w-3 text-muted-foreground" />
+                        <span className="text-xs text-muted-foreground">trend</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        {/* Pricing */}
+        <TabsContent value="pricing" className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle>Price Competitiveness Analysis</CardTitle>
+              <CardDescription>ต้องมี market data/API เพิ่มเติม</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className="text-sm text-muted-foreground">
+                หน้า UI พร้อมแล้ว — แสดงผลได้ทันทีเมื่อมีแหล่งข้อมูลราคาตลาด (brand, avgPrice, marketPrice, margin)
+              </p>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
