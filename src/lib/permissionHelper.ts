@@ -1,7 +1,7 @@
 // File: src/src/lib/permissionHelper.ts
 import { db } from '@/src/lib/firebaseAdmin';
 import type { Me } from '@/src/lib/session';
-import type { Permission } from '@/types/permission';
+import type { Permission } from 'types/permissions';
 
 /**
  * Structure we expect on user doc/session (but code tolerates missing fields):

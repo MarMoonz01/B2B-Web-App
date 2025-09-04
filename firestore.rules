@@ -176,12 +176,18 @@ service cloud.firestore {
 
     /* ======================== orders ======================== */
     match /orders/{orderId} {
-      // สร้างได้ถ้ามีสิทธิ์ในสาขาที่กำหนด (รองรับสคีมาที่มี field branchId แบบเดิม หรือ buyer/seller)
+      // สร้างได้ถ้ามีสิทธิ์ในสาขาที่เกี่ยวข้อง (รองรับสคีมาเดิมและใหม่ buyer/seller)
       allow create: if isSignedIn() && (
         isModerator() ||
         (('branchId' in request.resource.data) &&
           (isBranchSales(request.auth.uid, request.resource.data.branchId) ||
-           hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'inventory:write')))
+           hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'inventory:write'))) ||
+        (('buyerBranchId' in request.resource.data) &&
+          (isBranchSales(request.auth.uid, request.resource.data.buyerBranchId) ||
+           hasBranchPerm(request.auth.uid, request.resource.data.buyerBranchId, 'inventory:write'))) ||
+        (('sellerBranchId' in request.resource.data) &&
+          (isBranchSales(request.auth.uid, request.resource.data.sellerBranchId) ||
+           hasBranchPerm(request.auth.uid, request.resource.data.sellerBranchId, 'inventory:write')))
       );
 
       // อ่านได้ถ้าเกี่ยวข้องกับสาขาที่มีสิทธิ์ดู (legacy viewer + perms ใหม่)
@@ -264,13 +270,27 @@ service cloud.firestore {
       allow create, update, delete: if isModerator();
     }
 
-    /* ======================= notifications ======================= */
+    /* ======================= notifications (patched) ======================= */
     match /notifications/{notifId} {
+      // อ่าน/อัปเดต: ต้องมีสิทธิ์ดูสาขาที่ระบุ
       allow read, update: if isSignedIn() && (
         isModerator() ||
         (('branchId' in resource.data) && canViewBranch(request.auth.uid, resource.data.branchId))
       );
-      allow create: if isSignedIn() && isModerator();
+
+      // ✅ ผ่อน create ให้ user ที่เกี่ยวข้องกับสาขานั้นสร้างได้ (หรือจะเข้มกว่านี้โดยตัด viewer ออกก็ได้)
+      allow create: if isSignedIn() && (
+        isModerator() ||
+        (('branchId' in request.resource.data) &&
+          (
+            isBranchViewer(request.auth.uid, request.resource.data.branchId) ||
+            hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'inventory:write') ||
+            hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'transfer:approve') ||
+            hasBranchPerm(request.auth.uid, request.resource.data.branchId, 'transfer:read')
+          )
+        )
+      );
+
       allow delete: if isModerator();
     }
 

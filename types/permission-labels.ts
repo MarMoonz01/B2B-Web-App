@@ -1,7 +1,10 @@
-// File: src/types/permissionLabels.ts
-import { Permission } from './permission';
+// src/types/permission-labels.ts
+import type { Permission } from 'types/permissions';
 
-export const PERMISSION_LABELS: Record<Permission, { name: string; description: string }> = {
+export const PERMISSION_LABELS: Record<
+  Permission,
+  { name: string; description: string }
+> = {
   // Overview
   'overview:read': {
     name: 'ดูภาพรวมสาขา',
@@ -37,28 +40,28 @@ export const PERMISSION_LABELS: Record<Permission, { name: string; description: 
   // History / Audit
   'history:read': {
     name: 'ดูประวัติการทำงาน',
-    description: 'สามารถเข้าถึงหน้า History/Audit log ของสาขา (ดูเหตุการณ์และการเปลี่ยนแปลงย้อนหลังได้)',
+    description: 'เข้าถึงหน้า History/Audit log ของสาขา (ดูเหตุการณ์ย้อนหลัง)',
   },
   'history:export': {
     name: 'ส่งออกประวัติ',
-    description: 'สามารถดาวน์โหลด/ส่งออกข้อมูลประวัติการทำงานในรูปแบบ CSV หรือรายงานได้',
+    description: 'ดาวน์โหลด/ส่งออกข้อมูลประวัติการทำงาน (CSV/Reports)',
   },
 
   // Super Admin
   'admin:roles:manage': {
     name: 'จัดการ Roles ระบบ',
-    description: 'สามารถสร้าง/แก้ไข/ลบ Role ทั้งหมดในระบบ',
+    description: 'สร้าง/แก้ไข/ลบ Role ทั้งหมดในระบบ',
   },
   'admin:users:manage': {
     name: 'จัดการผู้ใช้ทั้งหมด',
-    description: 'สามารถจัดการผู้ใช้ทั้งหมด ทุกสาขา',
+    description: 'จัดการผู้ใช้ได้ทุกสาขา',
   },
   'admin:branches:manage': {
     name: 'จัดการสาขาทั้งหมด',
-    description: 'สามารถสร้าง/แก้ไข/ลบสาขาในระบบได้',
+    description: 'สร้าง/แก้ไข/ลบสาขาในระบบ',
   },
   'admin:view_analytics': {
     name: 'ดูภาพรวม Analytics',
-    description: 'สามารถเข้าถึง Dashboard ภาพรวมธุรกิจได้',
+    description: 'เข้าถึง Dashboard ภาพรวมธุรกิจได้',
   },
 };

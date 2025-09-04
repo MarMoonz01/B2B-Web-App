@@ -3,11 +3,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 // UI
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from 'components/ui/card';
-import { Button } from 'components/ui/button';
-import { Badge } from 'components/ui/badge';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from 'components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from 'components/ui/tabs';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   BarChart as RBarChart,
   Bar,
@@ -16,7 +16,6 @@ import {
   CartesianGrid,
   Tooltip as RTooltip,
   ResponsiveContainer,
-  LineChart,
   Line,
   PieChart,
   Pie,
@@ -28,7 +27,6 @@ import {
   ComposedChart,
 } from 'recharts';
 import {
-  TrendingUp,
   DollarSign,
   Package,
   ShoppingCart,
@@ -44,28 +42,29 @@ import {
 } from 'lucide-react';
 
 // contexts
-import { useBranch } from 'contexts/BranchContext';
+import { useBranch } from '@/contexts/BranchContext';
+
+// firebase client auth (แนบ ID Token)
+import { getAuth, onAuthStateChanged } from 'firebase/auth';
 
 // types
-import type { GroupedProduct } from 'types/inventory';
+import type { GroupedProduct } from '@/types/inventory';
 
-/* ===================== API types (ให้ตรงกับ /api/analytics/summary เวอร์ชันล่าสุด) ===================== */
+/* ===================== API types ===================== */
 type SummaryData = {
   totalInventoryValue: number;
   pendingTransfers: number;
   branchCount: number;
   totalUsers: number;
 };
-
 type ChartDatum = { name: string; value: number };
 type TransfersDatum = { name: string; inbound?: number; outbound?: number };
-
 type SummaryResponse = {
   ok: boolean;
   summaryData: SummaryData;
   inventoryByBranchData: ChartDatum[];
   transfersOverTimeData: TransfersDatum[];
-  productCategoriesData: ChartDatum[]; // grouped by brand/category
+  productCategoriesData: ChartDatum[];
   error?: string;
 };
 
@@ -89,15 +88,14 @@ function toFromTo(range: '1month' | '3months' | '6months' | '1year') {
   return { from: fmt(from), to: fmt(to) };
 }
 
-// map UI range -> API range param
 function toApiRange(range: '1month' | '3months' | '6months' | '1year'): '7d' | '30d' | '90d' | 'ytd' {
   if (range === '1month') return '30d';
   if (range === '3months') return '90d';
-  if (range === '6months') return '90d'; // backend ยังไม่รองรับ 180d: ใช้ใกล้สุด
-  return 'ytd'; // '1year' -> YTD
+  if (range === '6months') return '90d';
+  return 'ytd';
 }
 
-// ------- helpers from inventory props (fallback) -------
+/* ------- client fallback helpers ------- */
 function calcInventoryValue(inventory: GroupedProduct[]) {
   return asArray(inventory).reduce((sum, p) => {
     return (
@@ -185,7 +183,6 @@ function buildBranchValueFromInventory(inventory: GroupedProduct[]) {
   }));
 }
 
-// กรอง inventory ให้เหลือเฉพาะสาขาที่เลือก
 function filterInventoryByBranch(inventory: GroupedProduct[], branchId?: string | null) {
   if (!branchId) return inventory;
   return asArray(inventory).map((p) => {
@@ -196,7 +193,6 @@ function filterInventoryByBranch(inventory: GroupedProduct[], branchId?: string 
   });
 }
 
-// ---------- build fallback SummaryResponse เมื่อ API ล่ม ----------
 function buildFallbackSummaryFromInventory(
   inventory: GroupedProduct[],
   from: string,
@@ -209,7 +205,6 @@ function buildFallbackSummaryFromInventory(
     return { name: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`, inbound: 0, outbound: 0 };
   });
 
-  // สร้าง category value จากมูลค่ารวม (proxy)
   const catMap = new Map<string, number>();
   asArray(inventory).forEach((p) => {
     const cat = (p as any)?.name?.split(' ')?.[0] || 'Unknown';
@@ -245,7 +240,6 @@ function buildFallbackSummaryFromInventory(
 }
 
 /* ===================== Props ===================== */
-// ทำให้ props เป็น optional เพื่อให้ <AnalyticsView /> เรียกได้เลย
 interface AnalyticsProps {
   inventory?: GroupedProduct[];
   loading?: boolean;
@@ -264,16 +258,30 @@ function makeBranchLabel(selectedBranch: any, fallbackId: string | null) {
   ) as string;
 }
 
+// รอให้ auth พร้อมแล้วค่อยดึง token
+async function getIdTokenSafe(): Promise<string | null> {
+  const auth = getAuth();
+  if (auth.currentUser) return auth.currentUser.getIdToken();
+  return new Promise((resolve) => {
+    const unsub = onAuthStateChanged(auth, async (u) => {
+      unsub();
+      try {
+        resolve(u ? await u.getIdToken() : null);
+      } catch {
+        resolve(null);
+      }
+    });
+  });
+}
+
 export default function Analytics(props: AnalyticsProps = {}) {
-  // default props
   const { inventory = [], loading = false } = props;
 
   const { selectedBranch, selectedBranchId, loading: branchLoading } = useBranch();
-
   const activeBranchId = selectedBranchId ?? null;
   const branchLabel = useMemo(() => makeBranchLabel(selectedBranch, activeBranchId), [selectedBranch, activeBranchId]);
 
-  // inventory ที่ “กรองตามสาขา”
+  // inventory ที่กรองตามสาขา
   const scopedInventory = useMemo(() => filterInventoryByBranch(inventory, activeBranchId), [inventory, activeBranchId]);
 
   const [timeRange, setTimeRange] = useState<'1month' | '3months' | '6months' | '1year'>('6months');
@@ -283,46 +291,57 @@ export default function Analytics(props: AnalyticsProps = {}) {
   const [apiLoading, setApiLoading] = useState(false);
   const [apiError, setApiError] = useState<string | null>(null);
 
-  // ===== ยิง API ตาม branch + range และกันยิงซ้ำด้วย key =====
   const apiRange = useMemo(() => toApiRange(timeRange), [timeRange]);
-  const apiKey = useMemo(
-    () => `/api/analytics/summary?branchId=${encodeURIComponent(activeBranchId ?? '')}&range=${apiRange}`,
-    [activeBranchId, apiRange]
-  );
+
+  // สร้าง key เฉพาะเมื่อมี branchId เท่านั้น
+  const apiKey = useMemo(() => {
+    if (!activeBranchId) return null;
+    return `/api/analytics/summary?branchId=${encodeURIComponent(activeBranchId)}&range=${apiRange}`;
+  }, [activeBranchId, apiRange]);
+
   const lastFetchedKeyRef = useRef<string | null>(null);
 
   useEffect(() => {
-    if (!activeBranchId) {
-      setApiError('ยังไม่ได้เลือกสาขา');
-      const fb = buildFallbackSummaryFromInventory(scopedInventory, from, to);
-      setApiData(fb);
-      return;
-    }
-
-    if (lastFetchedKeyRef.current === apiKey) return;
-
-    const controller = new AbortController();
     let cancelled = false;
+    const controller = new AbortController();
 
     (async () => {
+      // ยังไม่เลือกสาขา → ไม่เรียก API
+      if (!apiKey) {
+        setApiData(null);
+        setApiError('ยังไม่ได้เลือกสาขา');
+        return;
+      }
+      if (lastFetchedKeyRef.current === apiKey) return;
+
       try {
         setApiLoading(true);
         setApiError(null);
 
-        const r = await fetch(apiKey, { cache: 'no-store', signal: controller.signal });
-        const d = await r.json().catch(() => null);
+        const idToken = await getIdTokenSafe();
+        if (!idToken) {
+          throw new Error('not_signed_in');
+        }
 
+        const r = await fetch(apiKey, {
+          cache: 'no-store',
+          signal: controller.signal,
+          headers: { Authorization: `Bearer ${idToken}` },
+        });
+
+        const d: SummaryResponse | null = await r.json().catch(() => null);
         if (!r.ok || !d?.ok) throw new Error(d?.error || `HTTP ${r.status}`);
 
         if (!cancelled) {
-          setApiData(d as SummaryResponse);
+          setApiData(d);
           lastFetchedKeyRef.current = apiKey;
         }
       } catch (e: any) {
         if (!cancelled) {
           setApiError(e?.message || 'internal_server_error');
+          // fallback จาก scoped inventory
           setApiData(buildFallbackSummaryFromInventory(scopedInventory, from, to));
-          lastFetchedKeyRef.current = apiKey;
+          lastFetchedKeyRef.current = apiKey || 'no-branch';
         }
       } finally {
         if (!cancelled) setApiLoading(false);
@@ -333,12 +352,11 @@ export default function Analytics(props: AnalyticsProps = {}) {
       cancelled = true;
       controller.abort();
     };
-  }, [apiKey, activeBranchId, scopedInventory, from, to]);
+  }, [apiKey, scopedInventory, from, to]);
 
   /* ========== Map API -> UI model ========== */
   const summary = apiData?.summaryData;
 
-  // Orders/Revenue proxy จาก inbound+outbound
   const revenueData = useMemo(() => {
     const src = apiData?.transfersOverTimeData ?? [];
     return src.map((x) => {
@@ -347,23 +365,23 @@ export default function Analytics(props: AnalyticsProps = {}) {
     });
   }, [apiData]);
 
-  // Category: ใช้ value เป็นมูลค่า
   const categoryAnalysis = useMemo(() => {
     const src = apiData?.productCategoriesData ?? [];
     return src.map((c, i) => ({
       name: c.name,
       revenue: c.value,
-      units: c.value, // ไม่มี units จริงจาก API—ใช้ value เป็น proxy
+      units: c.value,
       margin: undefined as number | undefined,
       color: PIE_COLORS[i % PIE_COLORS.length],
     }));
   }, [apiData]);
 
-  // Branches tab: แสดงเฉพาะสาขาที่เลือก
   const branchPerformance = useMemo(() => {
     if (apiData?.inventoryByBranchData?.length) {
-      const filtered = apiData.inventoryByBranchData.filter((b) => b.name === branchLabel);
-      const src = (filtered.length ? filtered : apiData.inventoryByBranchData).slice(0, 1);
+      const filtered = activeBranchId
+        ? apiData.inventoryByBranchData.filter((b) => b.name === branchLabel)
+        : apiData.inventoryByBranchData.slice(0, 1);
+      const src = filtered.length ? filtered : apiData.inventoryByBranchData.slice(0, 1);
       return src.map((b) => ({
         branch: b.name,
         revenue: b.value,
@@ -372,18 +390,11 @@ export default function Analytics(props: AnalyticsProps = {}) {
         utilization: 0,
       }));
     }
-    // client fallback: จาก scopedInventory (มีสาขาเดียว)
     return buildBranchValueFromInventory(scopedInventory);
-  }, [apiData, scopedInventory, branchLabel]);
+  }, [apiData, scopedInventory, branchLabel, activeBranchId]);
 
-  // ไม่มีข้อมูล movement ราย product จาก API—ปล่อยว่าง
-  const inventoryTurnover: { product: string; turnover: number; daysStock: number; performance: string }[] = [];
-  const topSellingProducts: { name: string; units: number; revenue: number; growth: number }[] = [];
-
-  // DOT aging ด้วย scopedInventory
   const dotCodeAging = useMemo(() => buildDotAgingFromInventory(scopedInventory), [scopedInventory]);
 
-  // KPI
   const totalInventoryValue = useMemo(
     () => Math.round(summary?.totalInventoryValue ?? calcInventoryValue(scopedInventory)),
     [summary, scopedInventory]
@@ -392,10 +403,8 @@ export default function Analytics(props: AnalyticsProps = {}) {
   const totalRevenue = useMemo(() => revenueData.reduce((s, r) => s + (r.revenue || 0), 0), [revenueData]);
   const avgOrderValue = totalOrders > 0 ? totalRevenue / totalOrders : 0;
 
-  // “Out of Stock / skuCount” จาก client (สcope ตาม branch)
   const skuAndOOS = useMemo(() => {
-    let sku = 0,
-      oos = 0;
+    let sku = 0, oos = 0;
     asArray(scopedInventory).forEach((p) => {
       asArray((p as any)?.branches).forEach((b: any) => {
         asArray(b?.sizes).forEach((s: any) => {
@@ -409,7 +418,6 @@ export default function Analytics(props: AnalyticsProps = {}) {
     return { sku, oos };
   }, [scopedInventory]);
 
-  // รวม inbound/outbound ช่วงที่เลือก
   const inboundSum = useMemo(
     () => (apiData?.transfersOverTimeData ?? []).reduce((acc, x) => acc + (x.inbound || 0), 0),
     [apiData]
@@ -431,12 +439,22 @@ export default function Analytics(props: AnalyticsProps = {}) {
     );
   }
 
+  // ---------- ถ้ายังไม่ได้เลือกสาขา ----------
+  if (!activeBranchId) {
+    return (
+      <div className="space-y-4">
+        <div className="rounded-md border border-amber-400/40 bg-amber-50 dark:bg-amber-900/10 p-3 text-sm">
+          โปรดเลือกสาขาด้านซ้ายบนก่อน ระบบจะแสดง Analytics ให้ตามสิทธิ์ branchPerms ของคุณ
+        </div>
+      </div>
+    );
+  }
+
   // ---------- UI ----------
   const { from: fFrom, to: fTo } = { from, to };
 
   return (
     <div className="space-y-6">
-      {/* API error banner */}
       {apiError && (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-sm">
           โหลดข้อมูลจาก API ไม่สำเร็จ: <span className="font-medium">{apiError}</span> — กำลังแสดงข้อมูลจากสต็อกจริงของสาขาที่เลือกแทน
@@ -448,9 +466,7 @@ export default function Analytics(props: AnalyticsProps = {}) {
         <div>
           <h1>Analytics &amp; Reports</h1>
           <p className="text-muted-foreground">Deep insights into your tire business performance</p>
-          <p className="text-xs text-muted-foreground">
-            ช่วงเวลา: {fFrom} – {fTo}
-          </p>
+          <p className="text-xs text-muted-foreground">ช่วงเวลา: {fFrom} – {fTo}</p>
         </div>
 
         <div className="flex items-center gap-2">
@@ -508,7 +524,7 @@ export default function Analytics(props: AnalyticsProps = {}) {
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
               a.href = url;
-              a.download = `analytics_${activeBranchId ?? 'branch'}_${fFrom}_${fTo}.csv`;
+              a.download = `analytics_${activeBranchId}_${fFrom}_${fTo}.csv`;
               a.click();
               URL.revokeObjectURL(url);
             }}
@@ -694,7 +710,6 @@ export default function Analytics(props: AnalyticsProps = {}) {
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {/* ไม่มี movement breakdown จาก API ตอนนี้ */}
                   <div className="text-sm text-muted-foreground">No movement breakdown from API yet.</div>
                 </div>
               </CardContent>
@@ -846,7 +861,6 @@ export default function Analytics(props: AnalyticsProps = {}) {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {/* ไม่มีข้อมูล movement ราย product ตอนนี้ */}
                 <div className="text-sm text-muted-foreground">No product-level movement from API yet.</div>
               </div>
             </CardContent>

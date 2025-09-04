@@ -1,233 +1,207 @@
 // src/app/api/analytics/summary/route.ts
-export const dynamic = "force-dynamic";
+import { NextRequest, NextResponse } from 'next/server';
+import { adminAuth, db } from '@/src/lib/firebaseAdmin';
+import {
+  Timestamp,
+  FieldPath,
+} from 'firebase-admin/firestore';
 
-import { NextResponse } from "next/server";
-import { db } from "@/src/lib/firebaseAdmin";
-import { getServerSession } from "@/src/lib/session";
-import type { Me } from "@/src/lib/session";
-
-// ----------------------------------------------
-// Types for response (REAL data only — no mocks)
-// ----------------------------------------------
-interface SummaryData {
-  totalInventoryValue: number;
+/** ====== Types ที่หน้า Analytics ใช้ ====== */
+type SummaryData = {
+  totalInventoryValue: number;   // (optional) ยังไม่คำนวณจริงในรุ่นนี้
   pendingTransfers: number;
   branchCount: number;
-  totalUsers: number;
-}
+  totalUsers: number;            // (optional) ยังไม่คำนวณจริงในรุ่นนี้
+};
 
-interface ChartDatum { name: string; value: number }
-interface TransfersDatum { name: string; inbound?: number; outbound?: number }
+type ChartDatum = { name: string; value: number };
+type TransfersDatum = { name: string; inbound?: number; outbound?: number };
 
-interface SummaryResponse {
+type SummaryResponse = {
   ok: boolean;
   summaryData: SummaryData;
   inventoryByBranchData: ChartDatum[];
   transfersOverTimeData: TransfersDatum[];
-  productCategoriesData: ChartDatum[]; // grouped by brand (change to real category if available)
+  productCategoriesData: ChartDatum[];
+  error?: string;
+};
+
+function err(status: number, message: string) {
+  return NextResponse.json({ ok: false, error: message }, { status });
 }
 
-// ----------------------------------------------
-// Helpers
-// ----------------------------------------------
-function parseRangeParam(range: string | null): { start: Date; end: Date } {
+/** แปลง range เป็นช่วงเวลา (UTC) */
+function parseRange(range: '7d'|'30d'|'90d'|'ytd') {
   const now = new Date();
-  const r = (range || "30d").toLowerCase();
-  const start = new Date(now);
-  if (r === "7d") start.setDate(now.getDate() - 7);
-  else if (r === "90d") start.setDate(now.getDate() - 90);
-  else if (r === "ytd") start.setMonth(0, 1), start.setHours(0, 0, 0, 0);
-  else start.setDate(now.getDate() - 30); // default 30d
-  return { start, end: now };
-}
-
-function dkey(d: Date) {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${y}-${m}-${dd}`;
-}
-
-async function getVisibleStoreIds(me: Me): Promise<string[]> {
-  if (me.moderator) {
-    const snap = await db.collection("stores").select().get();
-    return snap.docs.map((d) => d.id);
+  const to = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 23, 59, 59));
+  let from = new Date(to);
+  if (range === '7d') from.setUTCDate(to.getUTCDate() - 6);
+  else if (range === '30d') from.setUTCDate(to.getUTCDate() - 29);
+  else if (range === '90d') from.setUTCDate(to.getUTCDate() - 89);
+  else { // ytd
+    from = new Date(Date.UTC(to.getUTCFullYear(), 0, 1, 0, 0, 0));
   }
-  const ids = (me.branches ?? []).map((b) => b.id).filter(Boolean);
-  if (!ids.length) return [];
-  // Validate existence & visibility (batch 'in' of 10)
-  const out: string[] = [];
-  for (let i = 0; i < ids.length; i += 10) {
-    const batch = ids.slice(i, i + 10);
-    const snap = await db.collection("stores").where("__name__", "in", batch).select().get();
-    out.push(...snap.docs.map((d) => d.id));
-  }
-  return out;
+  return {
+    fromTs: Timestamp.fromDate(from),
+    toTs: Timestamp.fromDate(to),
+    fromISO: from.toISOString().slice(0,10),
+    toISO: to.toISOString().slice(0,10),
+  };
 }
 
-// Price: dot.promoPrice ?? variant.basePrice ?? 0
-function resolveDotPrice(dot: any, variant: any): number {
-  const promo = dot?.promoPrice;
-  const base = variant?.basePrice;
-  if (promo === 0 || typeof promo === "number") return Number(promo) || 0;
-  return Number(base) || 0;
+/** รวมผลรายวัน (label เป็น YYYY-MM-DD) */
+function dayKey(d: Date) {
+  return d.toISOString().slice(0,10);
 }
 
-// Small util: run array tasks in parallel (with simple throttling)
-async function runAll<T>(arr: T[], fn: (x: T) => Promise<any>, chunk = 10) {
-  for (let i = 0; i < arr.length; i += chunk) {
-    const part = arr.slice(i, i + chunk);
-    // eslint-disable-next-line no-await-in-loop
-    await Promise.all(part.map(fn));
-  }
-}
-
-// ----------------------------------------------
-// GET handler (REAL data)
-// ----------------------------------------------
-export async function GET(req: Request) {
-  const me = await getServerSession();
-  if (!me) return NextResponse.json({ ok: false, error: "unauthenticated" }, { status: 401 });
-
+export async function GET(req: NextRequest) {
   try {
+    // ---------- 1) ตรวจ token ----------
+    const authz = req.headers.get('authorization') || req.headers.get('Authorization');
+    if (!authz?.startsWith('Bearer ')) return err(401, 'missing_token');
+
+    const idToken = authz.slice('Bearer '.length);
+    const decoded = await adminAuth.verifyIdToken(idToken).catch(() => null);
+    if (!decoded?.uid) return err(401, 'invalid_token');
+
+    const uid = decoded.uid;
+
+    // ---------- 2) อ่าน users/{uid} เพื่อรู้ branchPerms ----------
+    const uref = db.collection('users').doc(uid);
+    const usnap = await uref.get();
+    if (!usnap.exists) return err(403, 'no_user');
+
+    const udata = usnap.data() || {};
+    const branchPerms = (udata.branchPerms ?? {}) as Record<
+      string,
+      Record<string, boolean>
+    >;
+
+    const allowedBranchIds = Object.keys(branchPerms);
+    const isModerator = !!(udata.moderator === true || decoded.moderator === true);
+
+    // ป้องกัน user ที่ไม่มีสิทธิ์สาขาเลย
+    if (!isModerator && allowedBranchIds.length === 0) {
+      return err(403, 'no_permissions');
+    }
+
+    // ---------- 3) รับพารามิเตอร์ ----------
     const { searchParams } = new URL(req.url);
-    const rangeParam = searchParams.get("range");
-    const { start, end } = parseRangeParam(rangeParam);
+    const selectedBranchId = (searchParams.get('branchId') || '').trim(); // single-branch analytics
+    const rangeParam = (searchParams.get('range') || '90d') as '7d'|'30d'|'90d'|'ytd';
+    const { fromTs, toTs } = parseRange(rangeParam);
 
-    const storeIds = await getVisibleStoreIds(me);
+    // ต้องเลือกสาขาเสมอ (หน้า UI เรามี BranchSelect แล้ว)
+    if (!selectedBranchId) return err(400, 'missing_branchId');
 
-    // ---------- 1) Users count ----------
-    const usersSnap = await db.collection("users").select().get();
-    const totalUsers = usersSnap.size;
+    // สิทธิ์สาขา
+    if (!isModerator && !allowedBranchIds.includes(selectedBranchId)) {
+      return err(403, 'no_permissions');
+    }
 
-    // ---------- 2) Inventory aggregations ----------
-    const byBranch: Record<string, number> = {}; // storeId -> value
-    const byBrand: Record<string, number> = {};  // brandName -> value
-    let totalInventoryValue = 0;
+    // ---------- 4) ดึง movement ของสาขาที่เลือก (โยงกับ History) ----------
+    // collection: stockMovements
+    // where: branchId == selectedBranchId, createdAt between range
+    const movRef = db.collection('stockMovements')
+      .where('branchId', '==', selectedBranchId)
+      .where('createdAt', '>=', fromTs)
+      .where('createdAt', '<=', toTs);
 
-    await runAll(storeIds, async (storeId) => {
-      let storeTotal = 0;
+    const movSnap = await movRef.get();
 
-      const brandsSnap = await db.collection("stores").doc(storeId).collection("inventory").get();
-      // Brands in parallel (limit concurrency)
-      await runAll(brandsSnap.docs, async (brandDoc) => {
-        const brandName = (brandDoc.get("brandName") as string) || brandDoc.id;
+    // สร้าง bucket รายวัน inbound/outbound
+    const inboundByDay = new Map<string, number>();
+    const outboundByDay = new Map<string, number>();
+    // สร้างสรุป brand/category แบบเร็ว ๆ จาก movement (proxy)
+    const brandValue = new Map<string, number>();
 
-        const modelsSnap = await brandDoc.ref.collection("models").get();
-        await runAll(modelsSnap.docs, async (modelDoc) => {
-          const variantsSnap = await modelDoc.ref.collection("variants").get();
-          await runAll(variantsSnap.docs, async (variantDoc) => {
-            const variantData = variantDoc.data();
-            const dotsSnap = await variantDoc.ref.collection("dots").get();
+    movSnap.forEach(doc => {
+      const d = doc.data() as any;
+      const created = d.createdAt?.toDate?.() as Date | undefined;
+      if (!created) return;
+      const k = dayKey(created);
 
-            for (const dotDoc of dotsSnap.docs) {
-              const dd = dotDoc.data();
-              const qty = Number(dd?.qty ?? 0);
-              if (!qty) continue;
-              const price = resolveDotPrice(dd, variantData);
-              const val = qty * price;
-              storeTotal += val;
-              totalInventoryValue += val;
-              byBrand[brandName] = (byBrand[brandName] || 0) + val;
-            }
-          }, 10);
-        }, 10);
-      }, 6); // a bit lower to avoid overwhelming Firestore
+      const ev = String(d.eventType || '');
+      const qty = Number(d.qtyChange || 0);
+      // นับ inbound/outbound แบบ count ครั้ง (ไม่ใช่รวม qty) เพื่อ match UI ปัจจุบัน
+      if (ev === 'stock.transfer.in' || d.type === 'transfer_in') {
+        inboundByDay.set(k, (inboundByDay.get(k) || 0) + 1);
+      } else if (ev === 'stock.transfer.out' || d.type === 'transfer_out') {
+        outboundByDay.set(k, (outboundByDay.get(k) || 0) + 1);
+      }
 
-      byBranch[storeId] = (byBranch[storeId] || 0) + storeTotal;
-    }, 4);
+      // proxy category -> ใช้ brand field จาก movement (ถ้ามี)
+      const brand = (d.brand || 'Unknown') as string;
+      // ใช้ “จำนวนครั้งของ movement” เป็นค่าประมาณ
+      brandValue.set(brand, (brandValue.get(brand) || 0) + 1);
+    });
 
-    // Fetch branch names in batches of 10 (Firestore 'in' limit)
-    const nameMap: Record<string, string> = {};
-    for (let i = 0; i < storeIds.length; i += 10) {
-      const batch = storeIds.slice(i, i + 10);
-      const snap = await db.collection("stores").where("__name__", "in", batch).get();
-      for (const d of snap.docs) {
-        nameMap[d.id] =
-          (d.get("branchName") as string) ||
-          (d.get("name") as string) ||
-          d.id;
+    // รวมเป็น array สำหรับกราฟ
+    // สร้างแกนวันทั้งหมดภายในช่วง
+    const allDays: string[] = [];
+    {
+      const start = fromTs.toDate();
+      const end = toTs.toDate();
+      const cur = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth(), start.getUTCDate()));
+      while (cur <= end) {
+        allDays.push(dayKey(cur));
+        cur.setUTCDate(cur.getUTCDate() + 1);
       }
     }
 
-    const inventoryByBranchData: ChartDatum[] = Object.entries(byBranch)
-      .map(([id, v]) => ({ name: nameMap[id] || id, value: Math.round(v) }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 30);
+    const transfersOverTimeData: TransfersDatum[] = allDays.map(name => ({
+      name,
+      inbound: inboundByDay.get(name) || 0,
+      outbound: outboundByDay.get(name) || 0,
+    }));
 
-    const productCategoriesData: ChartDatum[] = Object.entries(byBrand)
-      .map(([k, v]) => ({ name: k, value: Math.round(v) }))
-      .sort((a, b) => b.value - a.value)
-      .slice(0, 12);
+    // Category/Brand value (proxy)
+    const productCategoriesData: ChartDatum[] =
+      Array.from(brandValue.entries()).map(([name, value]) => ({ name, value }));
 
-    // ---------- 3) Transfers over time + pending ----------
-    // Firestore: ใช้ < endPlusOneDay แทน <= end เพื่อชัดเจนว่า "ภายในวัน"
-    const endPlusOne = new Date(end);
-    endPlusOne.setDate(endPlusOne.getDate() + 1);
-    endPlusOne.setHours(0, 0, 0, 0);
+    // Inventory by branch (สำหรับแท็บ Branches — ในหน้าเราแสดงเฉพาะ branch ที่เลือก)
+    const inventoryByBranchData: ChartDatum[] = [
+      { name: selectedBranchId, value: (inboundByDay.size + outboundByDay.size) || 0 },
+    ];
 
-    let transfersOverTimeData: TransfersDatum[] = [];
-    let pendingTransfers = 0;
+    // ---------- 5) Pending transfers (orders ที่เกี่ยวข้องและยังไม่ปิด) ----------
+    const statusesOpen = ['requested','approved','confirmed'] as const;
+    const ordersRefBuyer = db.collection('orders')
+      .where('buyerBranchId', '==', selectedBranchId)
+      .where('createdAt', '>=', fromTs)
+      .where('createdAt', '<=', toTs);
 
-    try {
-      const transfersSnap = await db
-        .collection("transfer_requests")
-        .where("createdAt", ">=", start)
-        .where("createdAt", "<", endPlusOne)
-        .get();
+    const ordersRefSeller = db.collection('orders')
+      .where('sellerBranchId', '==', selectedBranchId)
+      .where('createdAt', '>=', fromTs)
+      .where('createdAt', '<=', toTs);
 
-      const inboundByDay: Record<string, number> = {};
-      const outboundByDay: Record<string, number> = {};
-      const pendingStatuses = new Set(["requested", "approved", "shipped"]);
-      const vis = new Set(storeIds);
+    const [buyerSnap, sellerSnap] = await Promise.all([ordersRefBuyer.get(), ordersRefSeller.get()]);
+    const pendingTransfers =
+      buyerSnap.docs.concat(sellerSnap.docs).reduce((acc, d) => {
+        const st = (d.data() as any)?.status as string;
+        return acc + (statusesOpen.includes(st as any) ? 1 : 0);
+      }, 0);
 
-      for (const d of transfersSnap.docs) {
-        const data = d.data() as any;
-        const ts: any = data.createdAt;
-        const created = ts?.toDate ? ts.toDate() : (ts?.seconds ? new Date(ts.seconds * 1000) : new Date());
-        const day = dkey(created);
-        const buyer = data.buyerBranchId as string | undefined;
-        const seller = data.sellerBranchId as string | undefined;
-        const status = String(data.status || "");
-
-        if (buyer && vis.has(buyer)) inboundByDay[day] = (inboundByDay[day] || 0) + 1;
-        if (seller && vis.has(seller)) outboundByDay[day] = (outboundByDay[day] || 0) + 1;
-        if (pendingStatuses.has(status)) pendingTransfers++;
-      }
-
-      const dayKeys = Array.from(new Set([...Object.keys(inboundByDay), ...Object.keys(outboundByDay)])).sort();
-      transfersOverTimeData = dayKeys.map((k) => ({
-        name: k,
-        inbound: inboundByDay[k] || 0,
-        outbound: outboundByDay[k] || 0,
-      }));
-    } catch (err: any) {
-      // กันเคส index ยังไม่พร้อม (FAILED_PRECONDITION = code 9) หรือ project ใหม่
-      if (Number(err?.code) === 9) {
-        // ส่งข้อมูลว่าง แต่ยัง ok:true เพื่อให้หน้า UI แสดงส่วนอื่นได้
-        transfersOverTimeData = [];
-        pendingTransfers = 0;
-      } else {
-        throw err;
-      }
-    }
-
+    // (optional) ตัวเลขรวมอื่น ๆ
     const summaryData: SummaryData = {
-      totalInventoryValue: Math.round(totalInventoryValue),
+      totalInventoryValue: 0,     // ถ้าต้องการมูลค่าสต็อกจริง ค่อยเพิ่มการคำนวณจาก stores/*/inventory (อาจหนัก)
       pendingTransfers,
-      branchCount: storeIds.length,
-      totalUsers,
+      branchCount: 1,
+      totalUsers: 0,
     };
 
-    return NextResponse.json({
+    const resp: SummaryResponse = {
       ok: true,
       summaryData,
-      inventoryByBranchData,
       transfersOverTimeData,
       productCategoriesData,
-    } satisfies SummaryResponse);
-  } catch (error) {
-    console.error("Error fetching analytics data:", error);
-    return NextResponse.json({ ok: false, error: "internal_server_error" }, { status: 500 });
+      inventoryByBranchData,
+    };
+
+    return NextResponse.json(resp, { status: 200 });
+  } catch (e: any) {
+    console.error('analytics.summary error', e);
+    return err(500, e?.message || 'internal_error');
   }
 }

@@ -4,7 +4,7 @@ import { NextResponse } from 'next/server';
 import { db } from '@/src/lib/firebaseAdmin';
 import { getServerSession } from '@/src/lib/session';
 import { FieldValue } from 'firebase-admin/firestore';
-import type { Permission } from '@/types/permission';
+import type { Permission } from '@/types/permissions';
 
 type Body =
   | {

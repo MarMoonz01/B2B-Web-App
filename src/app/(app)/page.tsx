@@ -8,7 +8,7 @@ import TransferRequestsView from '@/src/app/(app)/app/views/TransferRequestView'
 import BranchUsersView from '@/src/app/(app)/app/views/BranchUsersView';
 import AnalyticsView from '@/src/app/(app)/app/views/AnalyticsView';
 import HistoryView from '@/src/app/(app)/app/views/HistoryView'; // ✅ NEW
-import type { Permission } from '@/types/permission';
+import type { Permission } from '@/types/permissions';
 
 export const dynamic = 'force-dynamic';
 

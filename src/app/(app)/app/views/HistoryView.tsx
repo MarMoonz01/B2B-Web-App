@@ -18,7 +18,11 @@ import {
   type DocumentData,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
-import { StoreService } from '@/lib/services/InventoryService';
+
+// ✅ ผูกกับ BranchSelect
+import { useBranch } from '@/contexts/BranchContext';
+// ✅ ดึงรายการสาขาที่ user มีสิทธิ์ (สำหรับโหมด all และแสดงชื่อสาขา)
+import { useUserBranches } from '@/hooks/useUserBranches';
 
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -42,7 +46,10 @@ import {
   ChevronDown,
   ChevronUp,
   Inbox,
+  AlertCircle,
 } from 'lucide-react';
+
+import type { MovementType, EventTypeString } from '@/types/events';
 
 /* ========== date helpers (lightweight) ========== */
 const fmtDateTime = (d: Date) =>
@@ -73,26 +80,12 @@ const isYesterday = (d: Date) => {
   return y.toDateString() === d.toDateString();
 };
 
-/* ========== types ========== */
-type MovementType = 'adjust' | 'in' | 'out' | 'transfer_in' | 'transfer_out';
-type EventTypeString =
-  | 'stock.received'
-  | 'stock.issued'
-  | 'stock.adjustment'
-  | 'stock.transfer.in'
-  | 'stock.transfer.out'
-  | 'order.requested'
-  | 'order.approved'
-  | 'order.rejected'
-  | 'order.shipped'
-  | 'order.received'
-  | 'order.cancelled';
-
+/* ========== types for this view ========== */
 type MovementDoc = {
   id: string;
   branchId: string;
   type: MovementType;
-  eventType?: EventTypeString;
+  eventType?: EventTypeString; // เอกสารเก่าอาจยังไม่มี
   qtyChange?: number;
   brand?: string | null;
   model?: string | null;
@@ -100,7 +93,7 @@ type MovementDoc = {
   dotCode?: string | null;
   orderId?: string | null;
   reason?: string | null;
-  createdAt?: any;
+  createdAt?: any; // Firestore Timestamp
 };
 
 type Category = 'all' | 'inventory' | 'transfer' | 'orders';
@@ -109,6 +102,7 @@ const categoryFromRow = (r: MovementDoc): Category => {
   if (ev.startsWith('stock.transfer.')) return 'transfer';
   if (ev.startsWith('stock.')) return 'inventory';
   if (ev.startsWith('order.')) return 'orders';
+  // fallback สำหรับข้อมูลเก่าที่ไม่มี eventType
   if (r.type === 'transfer_in' || r.type === 'transfer_out') return 'transfer';
   return 'inventory';
 };
@@ -131,80 +125,149 @@ const movementTypeMeta: Record<MovementType, { label: string; variant?: 'seconda
 const PAGE_SIZE = 150;
 
 type Props = {
-  /** branchId มาจาก Global Branch Select ภายนอก; ไม่ส่งมา → ใช้ 'all' */
+  /**
+   * ถ้าอยาก force สาขาจากภายนอกยังรองรับอยู่
+   * แต่ปกติปล่อยให้ BranchSelect/BranchContext เป็นตัวกำหนด
+   */
   branchId?: string;
 };
 
 export default function HistoryView({ branchId: propBranchId }: Props) {
-  // ป้องกัน where(undefined)
-  const resolvedBranchId = propBranchId && propBranchId.trim() !== '' ? propBranchId : 'all';
+  // ✅ ใช้สาขาจาก BranchContext เป็นหลัก (เชื่อมกับ BranchSelect)
+  const { selectedBranchId: branchFromCtx } = useBranch();
+  const effectiveBranchId = (propBranchId && propBranchId.trim() !== '' ? propBranchId : branchFromCtx) || 'all';
 
-  const [branchMap, setBranchMap] = useState<Record<string, string>>({});
+  // ✅ รายการสาขาที่ user มีสิทธิ์ + สร้างชื่อสาขาไว้โชว์
+  const { branches, loading: branchesLoading, error: branchesError } = useUserBranches();
+  const branchMap = useMemo(() => {
+    const m: Record<string, string> = {};
+    (branches ?? []).forEach((b) => (m[b.branchId] = b.branchName ?? b.branchId));
+    return m;
+  }, [branches]);
+
   const [tab, setTab] = useState<Category>('all');
   const [search, setSearch] = useState('');
   const [movementFilter, setMovementFilter] = useState<'all' | MovementType>('all');
   const [rows, setRows] = useState<MovementDoc[]>([]);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
   const lastDocRef = useRef<QueryDocumentSnapshot<DocumentData> | null>(null);
   const [refreshing, setRefreshing] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  /* โหลดชื่อสาขาไว้แสดง */
-  useEffect(() => {
-    let mounted = true;
-    (async () => {
-      try {
-        const m = await StoreService.getAllStores();
-        if (mounted) setBranchMap(m);
-      } catch {}
-    })();
-    return () => {
-      mounted = false;
-    };
-  }, []);
-
-  /* โหลด realtime ตามสาขาที่เลือกจากภายนอก */
+  /* โหลด realtime ตามสาขาที่เลือก */
   useEffect(() => {
     setRows([]);
+    setErrMsg(null);
     lastDocRef.current = null;
 
     const base = collection(db, 'stockMovements');
-    const qRef =
-      resolvedBranchId === 'all'
-        ? query(base, orderBy('createdAt', 'desc'), limit(PAGE_SIZE))
-        : query(base, where('branchId', '==', resolvedBranchId), orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
 
-    const unsub = onSnapshot(qRef, (snap) => {
-      const list: MovementDoc[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
-      setRows(list);
-      lastDocRef.current = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
-    });
+    // 🔒 ถ้าเลือก ALL: รวมผลจากทุกสาขาที่ user มีสิทธิ์ ด้วย where-in (ทีละ ≤ 10)
+    if (effectiveBranchId === 'all') {
+      // ยังโหลดรายการสิทธิ์ไม่เสร็จ → รอ
+      if (branchesLoading) return;
+      // โหลดไม่ได้หรือไม่มีสิทธิ์ → แสดงว่างพร้อม error
+      if (branchesError) {
+        setErrMsg('Missing or insufficient permissions.');
+        return;
+      }
+      const allowed = (branches ?? []).map((b) => b.branchId);
+      if (allowed.length === 0) {
+        setRows([]);
+        return;
+      }
+
+      // แบ่งเป็นก้อนละ ≤ 10
+      const chunks: string[][] = [];
+      for (let i = 0; i < allowed.length; i += 10) chunks.push(allowed.slice(i, i + 10));
+
+      const unsubs: Array<() => void> = [];
+      const merged = new Map<string, MovementDoc>();
+
+      chunks.forEach((ids) => {
+        const qRef = query(base, where('branchId', 'in', ids), orderBy('createdAt', 'desc'), limit(PAGE_SIZE));
+        const unsub = onSnapshot(
+          qRef,
+          (snap) => {
+            snap.docs.forEach((d) => merged.set(d.id, { id: d.id, ...(d.data() as any) }));
+            const sorted = Array.from(merged.values()).sort(
+              (a, b) => (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0)
+            );
+            setRows(sorted);
+          },
+          (err) => {
+            console.error('HistoryView snapshot error (all):', err);
+            setErrMsg('Missing or insufficient permissions.');
+          }
+        );
+        unsubs.push(unsub);
+      });
+
+      return () => {
+        unsubs.forEach((f) => f());
+      };
+    }
+
+    // ✅ โหมดระบุสาขาเดียว
+    const qRef =
+      effectiveBranchId
+        ? query(base, where('branchId', '==', effectiveBranchId), orderBy('createdAt', 'desc'), limit(PAGE_SIZE))
+        : query(base, orderBy('createdAt', 'desc'), limit(PAGE_SIZE)); // เผื่อกรณีไม่มี context
+
+    const unsub = onSnapshot(
+      qRef,
+      (snap) => {
+        const list: MovementDoc[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        setRows(list);
+        lastDocRef.current = snap.docs.length ? snap.docs[snap.docs.length - 1] : null;
+      },
+      (err) => {
+        console.error('HistoryView snapshot error:', err);
+        setErrMsg('Missing or insufficient permissions.');
+      }
+    );
+
     return () => {
       unsub();
     };
-  }, [resolvedBranchId]);
+  }, [effectiveBranchId, branchesLoading, branchesError, branches]);
 
   const loadMore = () => {
+    // ในโหมด all เรา disable loadMore เพื่อความง่ายและถูกต้องของเพจิเนชันแบบ multi-query
+    if (effectiveBranchId === 'all') return;
     if (!lastDocRef.current) return;
 
     const base = collection(db, 'stockMovements');
     const qRef =
-      resolvedBranchId === 'all'
+      effectiveBranchId === 'all'
         ? query(base, orderBy('createdAt', 'desc'), startAfter(lastDocRef.current), limit(PAGE_SIZE))
         : query(
             base,
-            where('branchId', '==', resolvedBranchId),
+            where('branchId', '==', effectiveBranchId),
             orderBy('createdAt', 'desc'),
             startAfter(lastDocRef.current),
-            limit(PAGE_SIZE),
+            limit(PAGE_SIZE)
           );
 
-    onSnapshot(qRef, (snap) => {
-      const more: MovementDoc[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
-      if (more.length) {
-        setRows((prev) => [...prev, ...more]);
-        lastDocRef.current = snap.docs[snap.docs.length - 1] ?? lastDocRef.current;
+    onSnapshot(
+      qRef,
+      (snap) => {
+        const more: MovementDoc[] = snap.docs.map((d) => ({ id: d.id, ...(d.data() as any) }));
+        if (more.length) {
+          setRows((prev) => {
+            const seen = new Set(prev.map((x) => x.id));
+            const merged = [...prev, ...more.filter((m) => !seen.has(m.id))];
+            return merged;
+          });
+          lastDocRef.current = snap.docs[snap.docs.length - 1] ?? lastDocRef.current;
+        }
+      },
+      (err) => {
+        console.error('HistoryView loadMore error:', err);
+        setErrMsg('Missing or insufficient permissions.');
       }
-    });
+    );
   };
 
   const handleRefresh = () => {
@@ -213,21 +276,22 @@ export default function HistoryView({ branchId: propBranchId }: Props) {
   };
 
   /* ฟิลเตอร์ */
+  const [searchText, movementFilterValue, currentTab] = [search, movementFilter, tab];
   const filtered = useMemo(() => {
     let data = rows;
-    if (tab !== 'all') data = data.filter((r) => categoryFromRow(r) === tab);
-    if (movementFilter !== 'all') data = data.filter((r) => r.type === movementFilter);
-    if (search.trim()) {
-      const q = search.trim().toLowerCase();
+    if (currentTab !== 'all') data = data.filter((r) => categoryFromRow(r) === currentTab);
+    if (movementFilterValue !== 'all') data = data.filter((r) => r.type === movementFilterValue);
+    if (searchText.trim()) {
+      const q = searchText.trim().toLowerCase();
       data = data.filter((r) =>
         [r.eventType || '', r.type, r.brand || '', r.model || '', r.dotCode || '', r.orderId || '', r.reason || '']
           .join(' ')
           .toLowerCase()
-          .includes(q),
+          .includes(q)
       );
     }
     return data;
-  }, [rows, tab, movementFilter, search]);
+  }, [rows, currentTab, movementFilterValue, searchText]);
 
   /* สถิติบนการ์ด */
   const stats = useMemo(() => {
@@ -271,13 +335,20 @@ export default function HistoryView({ branchId: propBranchId }: Props) {
     return <Badge variant={meta.variant ?? 'outline'}>{meta.label}</Badge>;
   };
 
+  const currentBranchLabel =
+    effectiveBranchId === 'all'
+      ? 'All my branches'
+      : branchMap[effectiveBranchId] ?? effectiveBranchId;
+
   return (
     <div className="section-padding space-y-8">
       {/* Header */}
       <motion.div initial={{ opacity: 0, y: -6 }} animate={{ opacity: 1, y: 0 }} className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Activity History</h1>
-          <p className="text-muted-foreground mt-1">Inventory / Transfers / Orders — scoped by your branch selector</p>
+          <p className="text-muted-foreground mt-1">
+            Inventory / Transfers / Orders — scoped by your BranchSelect ({currentBranchLabel})
+          </p>
         </div>
         <div className="flex items-center gap-2">
           <Button variant="outline" onClick={handleRefresh} disabled={refreshing} className="gap-2">
@@ -291,6 +362,14 @@ export default function HistoryView({ branchId: propBranchId }: Props) {
           </Button>
         </div>
       </motion.div>
+
+      {/* Optional error bar */}
+      {errMsg && (
+        <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-md p-2">
+          <AlertCircle className="h-4 w-4" />
+          {errMsg}
+        </div>
+      )}
 
       {/* Stats */}
       <motion.div variants={containerVariants} initial="hidden" animate="show" className="grid grid-cols-1 sm:grid-cols-4 gap-4">
@@ -379,7 +458,10 @@ export default function HistoryView({ branchId: propBranchId }: Props) {
                 </CardTitle>
                 <CardDescription>
                   Real-time from <code>stockMovements</code>
-                  {resolvedBranchId !== 'all' ? ` • ${branchMap[resolvedBranchId] ?? resolvedBranchId}` : ''}
+                  {' · '}
+                  {effectiveBranchId === 'all'
+                    ? 'All my branches'
+                    : branchMap[effectiveBranchId] ?? effectiveBranchId}
                 </CardDescription>
               </CardHeader>
 
@@ -388,7 +470,7 @@ export default function HistoryView({ branchId: propBranchId }: Props) {
                   {filtered.length === 0 ? (
                     <div className="h-[520px] flex flex-col items-center justify-center text-center gap-3 text-muted-foreground">
                       <Inbox className="h-8 w-8" />
-                      <div className="text-sm">No activity found with current filters</div>
+                      <div className="text-sm">{errMsg ?? 'No activity found with current filters'}</div>
                     </div>
                   ) : (
                     <motion.div variants={containerVariants} initial="hidden" animate="show" className="divide-y">
@@ -492,7 +574,13 @@ export default function HistoryView({ branchId: propBranchId }: Props) {
                   <p className="text-sm text-muted-foreground">
                     Showing {filtered.length} {tab === 'all' ? 'events' : `${categoryMeta[tab].label.toLowerCase()} events`}
                   </p>
-                  <Button variant="outline" size="sm" onClick={loadMore} disabled={!lastDocRef.current}>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={loadMore}
+                    disabled={effectiveBranchId === 'all' || !lastDocRef.current}
+                    title={effectiveBranchId === 'all' ? 'Load more is disabled in All-branches mode' : 'Load more'}
+                  >
                     Load more
                   </Button>
                 </div>

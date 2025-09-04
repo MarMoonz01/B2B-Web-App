@@ -17,6 +17,11 @@ import {
   runTransaction,
 } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import {
+  MovementType,
+  EventTypeString,
+  mapStockTypeToEvent,
+} from '@/types/events';
 
 /* =========================
  * Types
@@ -180,6 +185,21 @@ export type Branch = {
   branchName: string;
 };
 
+/** เอกสารจริงในคอลเลกชัน stockMovements (ใช้กับ HistoryView) */
+export type StockMovementDoc = {
+  branchId: string;
+  type: StockMovementType;
+  eventType: EventTypeString;
+  qtyChange: number;
+  brand?: string | null;
+  model?: string | null;
+  variantId?: string | null;
+  dotCode?: string | null;
+  orderId?: string | null;
+  reason?: string | null;
+  createdAt: any; // Firestore Timestamp
+};
+
 /* =========================
  * Utils
  * =======================*/
@@ -248,37 +268,8 @@ async function resolveCanonicalIds(
 }
 
 /* =========================
- * Audit helper (รวมไว้ในไฟล์เดียว)
+ * Audit helper (ใช้ type กลาง)
  * =======================*/
-type EventTypeString =
-  | 'stock.received'
-  | 'stock.issued'
-  | 'stock.adjustment'
-  | 'stock.transfer.in'
-  | 'stock.transfer.out'
-  | 'order.requested'
-  | 'order.approved'
-  | 'order.rejected'
-  | 'order.shipped'
-  | 'order.received'
-  | 'order.cancelled';
-
-function mapStockTypeToEvent(t: StockMovementType): EventTypeString {
-  switch (t) {
-    case 'in':
-      return 'stock.received';
-    case 'out':
-      return 'stock.issued';
-    case 'adjust':
-      return 'stock.adjustment';
-    case 'transfer_in':
-      return 'stock.transfer.in';
-    case 'transfer_out':
-      return 'stock.transfer.out';
-    default:
-      return 'stock.adjustment';
-  }
-}
 
 /** เขียน log แบบรวม schema เดิม (type/qtyChange/...) และเพิ่ม eventType สำหรับหน้า History ใหม่ */
 async function logMovement(payload: {
@@ -292,10 +283,10 @@ async function logMovement(payload: {
   orderId?: string;
   reason?: string | null;
 }) {
-  const docData: any = {
+  const docData: StockMovementDoc = {
     branchId: payload.branchId,
     type: payload.type,
-    eventType: mapStockTypeToEvent(payload.type), // เพิ่ม field ใหม่
+    eventType: mapStockTypeToEvent(payload.type),
     qtyChange: typeof payload.qtyChange === 'number' ? payload.qtyChange : 0,
     brand: payload.brand ?? null,
     model: payload.model ?? null,
@@ -305,7 +296,7 @@ async function logMovement(payload: {
     reason: payload.reason ?? null,
     createdAt: serverTimestamp(),
   };
-  await addDoc(collection(db, 'stockMovements'), docData);
+  await addDoc(collection(db, 'stockMovements'), docData as any);
 }
 
 async function logOrderEvent(payload: {
@@ -322,16 +313,20 @@ async function logOrderEvent(payload: {
   >;
   reason?: string | null;
 }) {
-  const docData: any = {
+  const docData: StockMovementDoc = {
     branchId: payload.branchId,
     orderId: payload.orderId,
     eventType: payload.eventType,
-    type: 'adjust', // คง type เดิมที่เป็น enum; ใช้ adjust เป็น placeholder สำหรับ order event
+    type: 'adjust', // เก็บกลาง ๆ; History ใช้ eventType เป็นหลัก
     qtyChange: 0,
     createdAt: serverTimestamp(),
     reason: payload.reason ?? null,
+    brand: null,
+    model: null,
+    variantId: null,
+    dotCode: null,
   };
-  await addDoc(collection(db, 'stockMovements'), docData);
+  await addDoc(collection(db, 'stockMovements'), docData as any);
 }
 
 /* =========================

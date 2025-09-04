@@ -11,7 +11,7 @@ import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 
-import type { Permission } from '@/types/permission';
+import type { Permission } from '@/types/permissions';
 import type { User } from './page';
 
 interface Role {
