@@ -1,6 +1,7 @@
+// File: src/app/(app)/app/profile/page.tsx
 'use client';
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { signOut as fbSignOut } from "firebase/auth";
 import { toast } from 'sonner';
@@ -21,7 +22,33 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Separator } from '@/components/ui/separator';
 import { Skeleton } from '@/components/ui/skeleton';
-import { Building2, Mail, MapPin, Shield, Bell, Cog } from 'lucide-react';
+import { Building2, Mail, Shield, Bell, Cog, History } from 'lucide-react';
+
+type AnyMap = Record<string, any>;
+
+function canSeeHistory(me: Me | null, branchId?: string | null) {
+  if (!me) return false;
+  // Moderator bypass
+  if (me.moderator) return true;
+
+  const bId = branchId ?? (me as AnyMap)?.selectedBranchId ?? null;
+  const branchPerms: AnyMap | undefined = (me as AnyMap)?.branchPerms;
+  const globalPerms: AnyMap | undefined = (me as AnyMap)?.globalPerms;
+
+  // Prefer explicit history:read
+  if (globalPerms?.['history:read']) return true;
+  if (bId && branchPerms?.[bId]?.['history:read'] === true) return true;
+
+  // Fallback: allow if user has inventory:read (common policy for viewing history)
+  if (globalPerms?.['inventory:read']) return true;
+  if (bId && branchPerms?.[bId]?.['inventory:read'] === true) return true;
+
+  // As a final fallback, if no perms info in session, let server-side guard decide
+  // Returning true keeps UX smooth; set to false if you’d rather hide the button.
+  if (!branchPerms && !globalPerms) return true;
+
+  return false;
+}
 
 export default function ProfilePage() {
   const router = useRouter();
@@ -62,8 +89,21 @@ export default function ProfilePage() {
     }
   };
 
-  const userRole = me?.moderator ? 'Admin' : me?.branches?.find(b => b.id === me.selectedBranchId)?.roles?.[0] ?? 'User';
+  const userRole = me?.moderator
+    ? 'Admin'
+    : me?.branches?.find((b: any) => b.id === (me as any)?.selectedBranchId)?.roles?.[0] ?? 'User';
+
   const initials = me?.email?.substring(0, 2).toUpperCase() ?? 'U';
+
+  const historyEnabled = useMemo(
+    () => canSeeHistory(me, selectedBranch?.id ?? (me as any)?.selectedBranchId ?? null),
+    [me, selectedBranch]
+  );
+
+  const goHistory = () => {
+    // ส่งผู้ใช้ไปหน้า history (branch จะถูกเลือกใน UI/Context)
+    router.push('/app?view=history');
+  };
 
   if (loading) {
     return (
@@ -99,6 +139,12 @@ export default function ProfilePage() {
           </p>
         </div>
         <div className="flex gap-2">
+          {historyEnabled && (
+            <Button variant="outline" onClick={goHistory}>
+              <History className="mr-2 h-4 w-4" />
+              Open History
+            </Button>
+          )}
           <Button variant="destructive" onClick={handleSignOut}>Sign out</Button>
         </div>
       </div>
@@ -139,9 +185,17 @@ export default function ProfilePage() {
 
         <TabsContent value="personal" className="mt-4">
           <Card>
-            <CardHeader>
-              <CardTitle>Personal Information</CardTitle>
-              <CardDescription>These details are managed by your administrator.</CardDescription>
+            <CardHeader className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+              <div>
+                <CardTitle>Personal Information</CardTitle>
+                <CardDescription>These details are managed by your administrator.</CardDescription>
+              </div>
+              {historyEnabled && (
+                <Button variant="secondary" onClick={goHistory}>
+                  <History className="mr-2 h-4 w-4" />
+                  Go to History
+                </Button>
+              )}
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="grid gap-2">
@@ -168,6 +222,7 @@ export default function ProfilePage() {
             </CardHeader>
           </Card>
         </TabsContent>
+
         <TabsContent value="notifications" className="mt-4">
           <Card>
             <CardHeader>
@@ -176,6 +231,7 @@ export default function ProfilePage() {
             </CardHeader>
           </Card>
         </TabsContent>
+
         <TabsContent value="preferences" className="mt-4">
           <Card>
             <CardHeader>

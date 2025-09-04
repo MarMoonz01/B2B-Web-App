@@ -1,4 +1,21 @@
-import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, increment, onSnapshot, query, serverTimestamp, setDoc, Timestamp, updateDoc, where, runTransaction, getFirestore } from "firebase/firestore";
+// File: src/lib/services/inventoryOrderService.ts
+import {
+  addDoc,
+  collection,
+  deleteDoc,
+  doc,
+  getDoc,
+  getDocs,
+  increment,
+  onSnapshot,
+  query,
+  serverTimestamp,
+  setDoc,
+  Timestamp,
+  updateDoc,
+  where,
+  runTransaction,
+} from 'firebase/firestore';
 import { db } from '@/lib/firebase';
 
 /* =========================
@@ -157,12 +174,11 @@ export type Notification = {
   createdAt: Timestamp;
 };
 
-// This is a simplified Branch type for the new function
+// Simplified Branch type
 export type Branch = {
   id: string;
   branchName: string;
 };
-
 
 /* =========================
  * Utils
@@ -182,18 +198,13 @@ function ensureArray<T>(v: T | T[] | undefined | null): T[] {
   return Array.isArray(v) ? v : [v];
 }
 
-function specFromVariant(
-  v: { size?: string; loadIndex?: string } | null | undefined
-) {
+function specFromVariant(v: { size?: string; loadIndex?: string } | null | undefined) {
   const size = (v?.size || '').trim();
   const li = (v?.loadIndex || '').trim();
-  return size && li ? `${size} (${li})` : (size || li || '');
+  return size && li ? `${size} (${li})` : size || li || '';
 }
 
-async function resolveBrandId(
-  storeId: string,
-  brandIdOrName: string
-): Promise<string> {
+async function resolveBrandId(storeId: string, brandIdOrName: string): Promise<string> {
   const candidates = [
     brandIdOrName,
     brandIdOrName.toUpperCase(),
@@ -234,6 +245,93 @@ async function resolveCanonicalIds(
   const brandId = await resolveBrandId(storeId, brandIdRaw);
   const modelId = await resolveModelId(storeId, brandId, modelIdRaw);
   return { brandId, modelId };
+}
+
+/* =========================
+ * Audit helper (รวมไว้ในไฟล์เดียว)
+ * =======================*/
+type EventTypeString =
+  | 'stock.received'
+  | 'stock.issued'
+  | 'stock.adjustment'
+  | 'stock.transfer.in'
+  | 'stock.transfer.out'
+  | 'order.requested'
+  | 'order.approved'
+  | 'order.rejected'
+  | 'order.shipped'
+  | 'order.received'
+  | 'order.cancelled';
+
+function mapStockTypeToEvent(t: StockMovementType): EventTypeString {
+  switch (t) {
+    case 'in':
+      return 'stock.received';
+    case 'out':
+      return 'stock.issued';
+    case 'adjust':
+      return 'stock.adjustment';
+    case 'transfer_in':
+      return 'stock.transfer.in';
+    case 'transfer_out':
+      return 'stock.transfer.out';
+    default:
+      return 'stock.adjustment';
+  }
+}
+
+/** เขียน log แบบรวม schema เดิม (type/qtyChange/...) และเพิ่ม eventType สำหรับหน้า History ใหม่ */
+async function logMovement(payload: {
+  branchId: string;
+  type: StockMovementType;
+  qtyChange?: number;
+  brand?: string;
+  model?: string;
+  variantId?: string;
+  dotCode?: string;
+  orderId?: string;
+  reason?: string | null;
+}) {
+  const docData: any = {
+    branchId: payload.branchId,
+    type: payload.type,
+    eventType: mapStockTypeToEvent(payload.type), // เพิ่ม field ใหม่
+    qtyChange: typeof payload.qtyChange === 'number' ? payload.qtyChange : 0,
+    brand: payload.brand ?? null,
+    model: payload.model ?? null,
+    variantId: payload.variantId ?? null,
+    dotCode: payload.dotCode ?? null,
+    orderId: payload.orderId ?? null,
+    reason: payload.reason ?? null,
+    createdAt: serverTimestamp(),
+  };
+  await addDoc(collection(db, 'stockMovements'), docData);
+}
+
+async function logOrderEvent(payload: {
+  branchId: string;
+  orderId: string;
+  eventType: Extract<
+    EventTypeString,
+    | 'order.requested'
+    | 'order.approved'
+    | 'order.rejected'
+    | 'order.shipped'
+    | 'order.received'
+    | 'order.cancelled'
+  >;
+  reason?: string | null;
+}) {
+  const docData: any = {
+    branchId: payload.branchId,
+    orderId: payload.orderId,
+    eventType: payload.eventType,
+    type: 'adjust', // คง type เดิมที่เป็น enum; ใช้ adjust เป็น placeholder สำหรับ order event
+    qtyChange: 0,
+    createdAt: serverTimestamp(),
+    reason: payload.reason ?? null,
+  };
+  await addDoc(collection(db, 'stockMovements'), docData);
 }
 
 /* =========================
@@ -307,7 +405,7 @@ export const StoreService = {
  * Inventory Service
  * =======================*/
 export const InventoryService = {
-  /* ---------- Ensure helpers (ใช้ canonical id) ---------- */
+  /* ---------- Ensure helpers (canonical) ---------- */
 
   async ensureBrandDoc(storeId: string, brandName: string): Promise<{ brandId: string }> {
     const brandId = await resolveBrandId(storeId, brandName);
@@ -406,16 +504,47 @@ export const InventoryService = {
     const dRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const d = await getDoc(dRef);
     if (!d.exists()) {
+      const qtyInit = Math.max(0, init?.qty ?? 0);
       await setDoc(dRef, {
-        qty: Math.max(0, init?.qty ?? 0),
+        qty: qtyInit,
         promoPrice: init?.promoPrice ?? null,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+
+      // Log: ถ้ามี qty เริ่มต้น => in
+      if (qtyInit > 0) {
+        await logMovement({
+          branchId: storeId,
+          type: 'in',
+          qtyChange: qtyInit,
+          brand: bId,
+          model: mId,
+          variantId,
+          dotCode,
+          reason: 'dot.create',
+        });
+      }
     } else if (init) {
       const updatePayload: any = { updatedAt: serverTimestamp() };
       if (init.qty !== undefined) {
-        updatePayload.qty = Math.max(0, init.qty);
+        // set เป็นค่าใหม่ → มองว่าเป็น adjustment จากค่าปัจจุบัน
+        const curQty = Number((d.data() as any)?.qty || 0);
+        const newQty = Math.max(0, init.qty);
+        const delta = newQty - curQty;
+        updatePayload.qty = newQty;
+        if (delta !== 0) {
+          await logMovement({
+            branchId: storeId,
+            type: 'adjust',
+            qtyChange: delta,
+            brand: bId,
+            model: mId,
+            variantId,
+            dotCode,
+            reason: 'dot.ensure.set',
+          });
+        }
       }
       if (init.promoPrice !== undefined) {
         updatePayload.promoPrice = init.promoPrice;
@@ -508,9 +637,7 @@ export const InventoryService = {
   },
 
   async fetchInventory(): Promise<GroupedProduct[]> {
-    throw new Error(
-      'InventoryService.fetchInventory() ถูกยกเลิก — โปรดใช้ fetchInventoryFor(allowedBranchIds) แทน'
-    );
+    throw new Error('InventoryService.fetchInventory() ถูกยกเลิก — โปรดใช้ fetchInventoryFor(allowedBranchIds) แทน');
   },
 
   async fetchInventoryFor(branchIds: string[]): Promise<GroupedProduct[]> {
@@ -523,7 +650,9 @@ export const InventoryService = {
       try {
         const s = await StoreService.getStore(sId);
         if (s?.branchName) storeName = s.branchName;
-      } catch { /* ignore */ }
+      } catch {
+        /* ignore */
+      }
 
       try {
         const storeProducts = await this.fetchStoreInventory(sId, storeName);
@@ -543,38 +672,22 @@ export const InventoryService = {
   },
 
   // +++ เพิ่มฟังก์ชันที่ขาดหายไปตรงนี้ +++
-  async getNetworkInventory(
-    currentBranchId: string,
-    allBranches: Branch[]
-  ): Promise<GroupedProduct[]> {
+  async getNetworkInventory(currentBranchId: string, allBranches: Branch[]): Promise<GroupedProduct[]> {
     if (!currentBranchId || !allBranches || allBranches.length === 0) {
       return [];
     }
-  
-    // สร้าง list ของ ID สาขาอื่นๆ ที่ไม่ใช่สาขาปัจจุบัน
-    const otherBranchIds = allBranches
-      .map((b) => b.id)
-      .filter((id) => id !== currentBranchId);
-  
-    // ถ้าไม่มีสาขาอื่นเลย ก็ไม่ต้องค้นหา
-    if (otherBranchIds.length === 0) {
-      return [];
-    }
-  
-    // เรียกใช้ฟังก์ชันเดิมที่มีอยู่แล้วเพื่อดึงข้อมูล
+
+    const otherBranchIds = allBranches.map((b) => b.id).filter((id) => id !== currentBranchId);
+    if (otherBranchIds.length === 0) return [];
+
     return this.fetchInventoryFor(otherBranchIds);
   },
   // +++ สิ้นสุดส่วนที่เพิ่ม +++
 
-  parseProductInfo(
-    product: GroupedProduct,
-    branchId: string,
-    variantId: string,
-    dotCode: string
-  ) {
+  parseProductInfo(product: GroupedProduct, branchId: string, variantId: string, dotCode: string) {
     const parts = (product.id || '').split('-');
     const brandId = parts[0] || product.brand || '';
-    const modelId = parts.slice(1).join('-') || (product.model || 'unknown');
+    const modelId = parts.slice(1).join('-') || product.model || 'unknown';
     return { storeId: branchId, brandId, modelId, variantId, dotCode };
   },
 
@@ -598,7 +711,7 @@ export const InventoryService = {
     });
   },
 
-  /* ---------- Write: qty / price / dot (canonical) ---------- */
+  /* ---------- Write: qty / price / dot (canonical) + LOG ---------- */
 
   async adjustDotQuantity(
     storeId: string,
@@ -614,9 +727,22 @@ export const InventoryService = {
     const dotRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const snap = await getDoc(dotRef);
     if (!snap.exists()) throw new Error(`DOT ${dotCode} not found`);
+
     await updateDoc(dotRef, {
       qty: increment(qtyChange),
       updatedAt: serverTimestamp(),
+    });
+
+    // LOG
+    await logMovement({
+      branchId: storeId,
+      type: qtyChange >= 0 ? 'in' : 'out',
+      qtyChange,
+      brand: bId,
+      model: mId,
+      variantId,
+      dotCode,
+      reason: 'manual.adjust',
     });
   },
 
@@ -638,12 +764,27 @@ export const InventoryService = {
     const dSnap = await getDoc(dRef);
     if (dSnap.exists()) throw new Error(`DOT ${payload.dotCode} already exists`);
 
+    const qtyInit = Math.max(0, Number(payload.qty) || 0);
     await setDoc(dRef, {
-      qty: Math.max(0, Number(payload.qty) || 0),
+      qty: qtyInit,
       promoPrice: payload.promoPrice ?? null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
+
+    // LOG: initial receive
+    if (qtyInit > 0) {
+      await logMovement({
+        branchId: storeId,
+        type: 'in',
+        qtyChange: qtyInit,
+        brand: bId,
+        model: mId,
+        variantId,
+        dotCode: payload.dotCode,
+        reason: 'dot.create',
+      });
+    }
   },
 
   async setPromoPrice(
@@ -664,6 +805,18 @@ export const InventoryService = {
       promoPrice: promoPrice ?? null,
       updatedAt: serverTimestamp(),
     });
+
+    // LOG: adjustment (qtyChange=0) เพื่อบันทึกว่าเกิดการเปลี่ยนราคา
+    await logMovement({
+      branchId: storeId,
+      type: 'adjust',
+      qtyChange: 0,
+      brand: bId,
+      model: mId,
+      variantId,
+      dotCode,
+      reason: 'price.promo.set',
+    });
   },
 
   async deleteDot(
@@ -679,6 +832,22 @@ export const InventoryService = {
     const dRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId, 'dots', dotCode);
     const d = await getDoc(dRef);
     if (!d.exists()) throw new Error(`DOT ${dotCode} not found`);
+
+    // LOG: ถ้ามีคงเหลือ ให้บันทึกเป็น adjust ออกทั้งหมด
+    const curQty = Number((d.data() as any)?.qty || 0);
+    if (curQty !== 0) {
+      await logMovement({
+        branchId: storeId,
+        type: 'adjust',
+        qtyChange: -curQty,
+        brand: bId,
+        model: mId,
+        variantId,
+        dotCode,
+        reason: 'dot.delete',
+      });
+    }
+
     await deleteDoc(dRef);
   },
 
@@ -726,9 +895,7 @@ export const InventoryService = {
     const mId = await resolveModelId(storeId, bId, modelId);
 
     const vCol = collection(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants');
-    const vSnap = variantId
-      ? { docs: [await getDoc(doc(vCol, variantId))] }
-      : await getDocs(vCol);
+    const vSnap = variantId ? { docs: [await getDoc(doc(vCol, variantId))] } : await getDocs(vCol);
 
     const out: Array<{
       variantId: string;
@@ -789,7 +956,7 @@ export const NotificationService = {
 };
 
 /* =========================
- * Order Service (Best-practice transfer flow) — canonical IDs
+ * Order Service — canonical IDs + LOG
  * =======================*/
 export const OrderService = {
   async createOrder(payload: {
@@ -806,13 +973,25 @@ export const OrderService = {
       ...payload,
       items: payload.items.map(({ unitPrice, totalPrice, ...item }) => item),
       totalAmount: 0,
-      itemCount: itemCount,
+      itemCount,
       status: 'requested' as OrderStatus,
       orderNumber: `TR-${Date.now().toString().slice(-6)}`,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
     const ref = await addDoc(collection(db, 'orders'), orderData);
+
+    // LOG: order.requested (ทั้งสองฝั่ง)
+    await logOrderEvent({
+      branchId: payload.sellerBranchId,
+      orderId: ref.id,
+      eventType: 'order.requested',
+    });
+    await logOrderEvent({
+      branchId: payload.buyerBranchId,
+      orderId: ref.id,
+      eventType: 'order.requested',
+    });
 
     await NotificationService.createNotification({
       branchId: payload.sellerBranchId,
@@ -843,11 +1022,7 @@ export const OrderService = {
     }
   },
 
-  onOrdersByBranch(
-    branchId: string,
-    role: 'buyer' | 'seller',
-    callback: (orders: Order[]) => void
-  ) {
+  onOrdersByBranch(branchId: string, role: 'buyer' | 'seller', callback: (orders: Order[]) => void) {
     const field = role === 'buyer' ? 'buyerBranchId' : 'sellerBranchId';
     const q = query(collection(db, 'orders'), where(field, '==', branchId));
     return onSnapshot(
@@ -864,7 +1039,7 @@ export const OrderService = {
     );
   },
 
-  /* ---------- Status transitions ---------- */
+  /* ---------- Status transitions + LOG ---------- */
   async approveTransfer(orderId: string): Promise<void> {
     const ref = doc(db, 'orders', orderId);
     const snap = await getDoc(ref);
@@ -876,11 +1051,14 @@ export const OrderService = {
     }
     await updateDoc(ref, { status: 'approved', updatedAt: serverTimestamp() });
 
+    await logOrderEvent({ branchId: order.sellerBranchId, orderId, eventType: 'order.approved' });
+    await logOrderEvent({ branchId: order.buyerBranchId, orderId, eventType: 'order.approved' });
+
     await NotificationService.createNotification({
       branchId: order.buyerBranchId,
       title: 'Request Approved',
-      message: `Your request #${orderId.slice(0,6)} has been approved by ${order.sellerBranchName}.`,
-      orderId: orderId,
+      message: `Your request #${orderId.slice(0, 6)} has been approved by ${order.sellerBranchName}.`,
+      orderId,
       link: `/?view=transfer_requests`,
     });
   },
@@ -891,25 +1069,20 @@ export const OrderService = {
     if (!snap.exists()) throw new Error('Order not found');
 
     const order = snap.data() as Order;
-    if (
-      order.status !== 'requested' &&
-      order.status !== 'approved' &&
-      order.status !== 'confirmed'
-    ) {
+    if (order.status !== 'requested' && order.status !== 'approved' && order.status !== 'confirmed') {
       throw new Error('Can only reject requested/approved orders');
     }
 
-    await updateDoc(ref, {
-      status: 'rejected',
-      cancelReason: reason ?? null,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(ref, { status: 'rejected', cancelReason: reason ?? null, updatedAt: serverTimestamp() });
+
+    await logOrderEvent({ branchId: order.sellerBranchId, orderId, eventType: 'order.rejected', reason });
+    await logOrderEvent({ branchId: order.buyerBranchId, orderId, eventType: 'order.rejected', reason });
 
     await NotificationService.createNotification({
       branchId: order.buyerBranchId,
       title: 'Request Rejected',
-      message: `Your request #${orderId.slice(0,6)} was rejected by ${order.sellerBranchName}.`,
-      orderId: orderId,
+      message: `Your request #${orderId.slice(0, 6)} was rejected by ${order.sellerBranchName}.`,
+      orderId,
       link: `/?view=transfer_requests`,
     });
   },
@@ -934,14 +1107,22 @@ export const OrderService = {
         item.dotCode
       );
 
-      const { brandId: bId, modelId: mId } = await resolveCanonicalIds(
-        order.sellerBranchId,
-        parsed.brandId,
-        parsed.modelId
-      );
+      const { brandId: bId, modelId: mId } = await resolveCanonicalIds(order.sellerBranchId, parsed.brandId, parsed.modelId);
 
       await runTransaction(db, async (tx) => {
-        const dotRef = doc(db, 'stores', order.sellerBranchId, 'inventory', bId, 'models', mId, 'variants', item.variantId, 'dots', item.dotCode);
+        const dotRef = doc(
+          db,
+          'stores',
+          order.sellerBranchId,
+          'inventory',
+          bId,
+          'models',
+          mId,
+          'variants',
+          item.variantId,
+          'dots',
+          item.dotCode
+        );
         const ds = await tx.get(dotRef);
         if (!ds.exists()) throw new Error(`DOT ${item.dotCode} not found at seller branch`);
         const curQty = Number((ds.data() as any).qty || 0);
@@ -950,33 +1131,33 @@ export const OrderService = {
             `Insufficient stock for ${item.productName} ${item.specification} DOT ${item.dotCode} at ${order.sellerBranchName} (have ${curQty}, need ${item.quantity})`
           );
         }
-        tx.update(dotRef, {
-          qty: increment(-item.quantity),
-          updatedAt: serverTimestamp(),
-        });
+        tx.update(dotRef, { qty: increment(-item.quantity), updatedAt: serverTimestamp() });
       });
 
-      await addDoc(collection(db, 'stockMovements'), {
+      // LOG: transfer_out (ฝั่งผู้ขาย)
+      await logMovement({
         branchId: order.sellerBranchId,
-        orderId,
+        type: 'transfer_out',
+        qtyChange: -item.quantity,
         brand: bId,
         model: mId,
         variantId: item.variantId,
         dotCode: item.dotCode,
-        qtyChange: -item.quantity,
-        type: 'transfer_out',
+        orderId,
         reason: `Transfer to ${order.buyerBranchName}`,
-        createdAt: serverTimestamp(),
       });
     }
 
     await updateDoc(ref, { status: 'shipped', updatedAt: serverTimestamp() });
 
+    await logOrderEvent({ branchId: order.sellerBranchId, orderId, eventType: 'order.shipped' });
+    await logOrderEvent({ branchId: order.buyerBranchId, orderId, eventType: 'order.shipped' });
+
     await NotificationService.createNotification({
       branchId: order.buyerBranchId,
       title: 'Order Shipped',
-      message: `Order #${orderId.slice(0,6)} from ${order.sellerBranchName} is on its way.`,
-      orderId: orderId,
+      message: `Order #${orderId.slice(0, 6)} from ${order.sellerBranchName} is on its way.`,
+      orderId,
       link: `/?view=transfer_requests`,
     });
   },
@@ -1006,31 +1187,15 @@ export const OrderService = {
         loadIndex = specMatch[2].trim();
       }
 
-      const { brandId, modelId } = await InventoryService.ensureModelDoc(
-        order.buyerBranchId,
-        brandName,
-        modelName
-      );
+      const { brandId, modelId } = await InventoryService.ensureModelDoc(order.buyerBranchId, brandName, modelName);
 
-      await InventoryService.ensureVariantPath(
-        order.buyerBranchId,
-        brandId,
-        modelId,
-        item.variantId,
-        {
-          size: size,
-          loadIndex: loadIndex,
-          basePrice: 0,
-        }
-      );
+      await InventoryService.ensureVariantPath(order.buyerBranchId, brandId, modelId, item.variantId, {
+        size,
+        loadIndex,
+        basePrice: 0,
+      });
 
-      await InventoryService.ensureDotDoc(
-        order.buyerBranchId,
-        brandId,
-        modelId,
-        item.variantId,
-        item.dotCode
-      );
+      await InventoryService.ensureDotDoc(order.buyerBranchId, brandId, modelId, item.variantId, item.dotCode);
 
       await InventoryService.adjustDotQuantity(
         order.buyerBranchId,
@@ -1041,32 +1206,36 @@ export const OrderService = {
         item.quantity
       );
 
-      await addDoc(collection(db, 'stockMovements'), {
+      // LOG: transfer_in (ฝั่งผู้ซื้อ)
+      await logMovement({
         branchId: order.buyerBranchId,
-        orderId,
+        type: 'transfer_in',
+        qtyChange: item.quantity,
         brand: brandId,
         model: modelId,
         variantId: item.variantId,
         dotCode: item.dotCode,
-        qtyChange: item.quantity,
-        type: 'transfer_in',
+        orderId,
         reason: `Transfer from ${order.sellerBranchName}`,
-        createdAt: serverTimestamp(),
       });
     }
 
     await updateDoc(ref, { status: 'received', updatedAt: serverTimestamp() });
 
+    await logOrderEvent({ branchId: order.buyerBranchId, orderId, eventType: 'order.received' });
+    await logOrderEvent({ branchId: order.sellerBranchId, orderId, eventType: 'order.received' });
+
     await NotificationService.createNotification({
       branchId: order.sellerBranchId,
       title: 'Order Received',
-      message: `${order.buyerBranchName} has confirmed receiving order #${orderId.slice(0,6)}.`,
-      orderId: orderId,
+      message: `${order.buyerBranchName} has confirmed receiving order #${orderId.slice(0, 6)}.`,
+      orderId,
       link: `/?view=transfer_requests`,
     });
   },
 
   async deliverTransfer(orderId: string): Promise<void> {
+    // ใช้ flow ship (ในระบบนี้ deliver == ship)
     return this.shipTransfer(orderId);
   },
 
@@ -1076,31 +1245,26 @@ export const OrderService = {
     if (!snap.exists()) throw new Error('Order not found');
 
     const order = snap.data() as Order;
-    if (
-      order.status !== 'requested' &&
-      order.status !== 'approved' &&
-      order.status !== 'confirmed'
-    ) {
+    if (order.status !== 'requested' && order.status !== 'approved' && order.status !== 'confirmed') {
       throw new Error('Can only cancel orders that are not shipped yet');
     }
-    await updateDoc(ref, {
-      status: 'cancelled',
-      cancelReason: reason ?? null,
-      updatedAt: serverTimestamp(),
-    });
+    await updateDoc(ref, { status: 'cancelled', cancelReason: reason ?? null, updatedAt: serverTimestamp() });
+
+    await logOrderEvent({ branchId: order.buyerBranchId, orderId, eventType: 'order.cancelled', reason: reason ?? null });
+    await logOrderEvent({ branchId: order.sellerBranchId, orderId, eventType: 'order.cancelled', reason: reason ?? null });
 
     await NotificationService.createNotification({
       branchId: order.sellerBranchId,
       title: 'Request Cancelled',
-      message: `Request #${orderId.slice(0,6)} from ${order.buyerBranchName} has been cancelled.`,
-      orderId: orderId,
+      message: `Request #${orderId.slice(0, 6)} from ${order.buyerBranchName} has been cancelled.`,
+      orderId,
       link: `/?view=transfer_requests`,
     });
   },
 };
 
 /* =========================
- * Export default (สะดวก import เดียว)
+ * Export default
  * =======================*/
 export default {
   StoreService,

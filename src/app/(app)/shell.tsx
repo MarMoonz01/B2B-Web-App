@@ -21,7 +21,13 @@ import BranchSwitcher from '../components/BranchSwitcher';
 import NotificationBell from '../components/NotificationBell';
 
 /* ---------- Types ---------- */
-export type View = 'inventory' | 'transfer' | 'transfer-requests' | 'analytics' | 'branches';
+export type View =
+  | 'inventory'
+  | 'transfer'
+  | 'transfer-requests'
+  | 'analytics'
+  | 'branches'
+  | 'history'; // ✅ added
 
 type Me = {
   id?: string;
@@ -42,11 +48,12 @@ type AppShellProps = {
 
 /* ---------- Nav mapping (label + icon + href) ---------- */
 const NAV_DEF: Record<View, { label: string; href: string; icon: React.ElementType }> = {
-  inventory:          { label: 'Inventory',          href: '/app?view=inventory',          icon: Boxes },
-  transfer:           { label: 'Transfer',           href: '/app?view=transfer',           icon: ArrowLeftRight },
-  'transfer-requests':{ label: 'Transfer Requests',  href: '/app?view=transfer-requests',  icon: History },
-  branches:           { label: 'Branch Users',       href: '/app?view=branches',           icon: Users },
-  analytics:          { label: 'Analytics',          href: '/app?view=analytics',          icon: BarChart3 },
+  inventory:           { label: 'Inventory',          href: '/app?view=inventory',          icon: Boxes },
+  transfer:            { label: 'Transfer',           href: '/app?view=transfer',           icon: ArrowLeftRight },
+  'transfer-requests': { label: 'Transfer Requests',  href: '/app?view=transfer-requests',  icon: History },
+  branches:            { label: 'Branch Users',       href: '/app?view=branches',           icon: Users },
+  analytics:           { label: 'Analytics',          href: '/app?view=analytics',          icon: BarChart3 },
+  history:             { label: 'History',            href: '/app?view=history',            icon: History }, // ✅ added
 };
 
 export default function AppShell({ me, allowedViews, currentView, children }: AppShellProps) {
@@ -58,7 +65,8 @@ export default function AppShell({ me, allowedViews, currentView, children }: Ap
   };
 
   const displayName = me?.name ?? me?.email ?? 'User';
-  const avatarSeed = me?.avatarUrl ?? `https://api.dicebear.com/7.x/pixel-art/svg?seed=${me?.uid ?? me?.id ?? 'you'}`;
+  const avatarSeed =
+    me?.avatarUrl ?? `https://api.dicebear.com/7.x/pixel-art/svg?seed=${me?.uid ?? me?.id ?? 'you'}`;
   const avatarFallback = (displayName || 'U').slice(0, 1).toUpperCase();
 
   return (
@@ -72,7 +80,9 @@ export default function AppShell({ me, allowedViews, currentView, children }: Ap
         {/* Primary nav (based on allowedViews) */}
         <nav className="hidden md:flex items-center gap-1">
           {allowedViews.map((v) => {
-            const { label, href, icon: Icon } = NAV_DEF[v];
+            const def = NAV_DEF[v];
+            if (!def) return null; // safety if backend grants a view we don't map yet
+            const { label, href, icon: Icon } = def;
             const active = v === currentView;
             return (
               <Link

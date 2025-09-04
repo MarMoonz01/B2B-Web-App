@@ -1,80 +1,46 @@
 {
   "indexes": [
     {
+      "collectionGroup": "stockMovements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "branchId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stockMovements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "branchId", "order": "ASCENDING" },
+        { "fieldPath": "eventType", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stockMovements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "stockMovements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "orderId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+
+    {
       "collectionGroup": "notifications",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "branchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "notifications",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "branchId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "branchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "ASCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "branchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "buyerBranchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "buyerBranchId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "sellerBranchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "sellerBranchId", "order": "ASCENDING" },
-        { "fieldPath": "status", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
+      ]
     },
 
     {
@@ -83,8 +49,15 @@
       "fields": [
         { "fieldPath": "buyerBranchId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
+      ]
+    },
+    {
+      "collectionGroup": "orders",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "sellerBranchId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
     },
     {
       "collectionGroup": "orders",
@@ -93,17 +66,7 @@
         { "fieldPath": "buyerBranchId", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "sellerBranchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
+      ]
     },
     {
       "collectionGroup": "orders",
@@ -112,64 +75,16 @@
         { "fieldPath": "sellerBranchId", "order": "ASCENDING" },
         { "fieldPath": "status", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
+      ]
     },
 
     {
-      "collectionGroup": "transfers",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "involvedBranches", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "transfers",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "orgId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "transfers",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "orgId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-
-    {
-      "collectionGroup": "orders",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "branchId", "order": "ASCENDING" },
-        { "fieldPath": "createdAt", "order": "ASCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "orders",
+      "collectionGroup": "dailySummaries",
       "queryScope": "COLLECTION",
       "fields": [
         { "fieldPath": "branchId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
-      ],
-      "density": "SPARSE_ALL"
-    },
-    {
-      "collectionGroup": "transfers",
-      "queryScope": "COLLECTION",
-      "fields": [
-        { "fieldPath": "involvedBranches", "arrayConfig": "CONTAINS" },
-        { "fieldPath": "status", "order": "ASCENDING" }
-      ],
-      "density": "SPARSE_ALL"
+      ]
     }
   ],
   "fieldOverrides": []

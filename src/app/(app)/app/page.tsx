@@ -63,6 +63,12 @@ const AnalyticsView = dynamic(
   { ssr: false, loading: () => <ViewLoader title="Loading Analytics Dashboard..." /> }
 );
 
+// ✅ NEW: History view (branch context inside component)
+const HistoryView = dynamic(
+  () => import('./views/HistoryView'),
+  { ssr: false, loading: () => <ViewLoader title="Loading History..." /> }
+);
+
 const FirebaseTest = dynamic(
   () => import('@/src/app/components/FirebaseTest').then((mod) => mod.FirebaseTest),
   { ssr: false, loading: () => <p>Loading debug tools...</p> }
@@ -199,6 +205,10 @@ export default function Page() {
       case 'dashboard':
       case 'analytics':
         return <AnalyticsView />;
+
+      // ✅ NEW: History route (no extra props needed)
+      case 'history':
+        return <HistoryView />;
 
       default:
         return <OverviewView myBranchId={myBranchId} myBranchName={myBranchName} />;

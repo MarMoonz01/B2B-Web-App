@@ -1,26 +1,30 @@
-// types/permissions.ts
+// File: src/types/permissions.ts
 
 // 1. กำหนด Permissions ทั้งหมดในระบบ
 export const PERMISSIONS = [
   // Overview (Branch-scoped)
-  'overview:read',     // Can view branch overview (KPI, charts, recent activities)
+  'overview:read',        // Can view branch overview (KPI, charts, recent activities)
 
   // Inventory Management
-  'inventory:read',    // Can view inventory items
-  'inventory:write',   // Can create/edit inventory items
-  'inventory:delete',  // Can delete inventory items
+  'inventory:read',       // Can view inventory items
+  'inventory:write',      // Can create/edit inventory items
+  'inventory:delete',     // Can delete inventory items
 
   // Transfer Management
-  'transfer:create',   // Can create transfer requests
-  'transfer:approve',  // Can approve/reject transfer requests
-  'transfer:read',     // Can view all transfer requests (for the branch)
+  'transfer:create',      // Can create transfer requests
+  'transfer:approve',     // Can approve/reject transfer requests
+  'transfer:read',        // Can view all transfer requests (for the branch)
 
   // User Management (scoped to a branch)
-  'users:manage',      // Can add/remove users from a branch
-  'users:assign_roles',// Can assign roles to users within a branch
+  'users:manage',         // Can add/remove users from a branch
+  'users:assign_roles',   // Can assign roles to users within a branch
 
   // Branch-level settings
-  'branch:settings',   // Can edit branch details
+  'branch:settings',      // Can edit branch details
+
+  // History / Audit log
+  'history:read',         // ✅ Can view history/audit log
+  'history:export',       // ✅ Can export history data (CSV, reports)
 
   // Admin-level permissions
   'admin:roles:manage',    // Can create, edit, and delete system-wide roles

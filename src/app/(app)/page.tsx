@@ -7,6 +7,7 @@ import TransferView from '@/src/app/(app)/app/views/TransferView';
 import TransferRequestsView from '@/src/app/(app)/app/views/TransferRequestView';
 import BranchUsersView from '@/src/app/(app)/app/views/BranchUsersView';
 import AnalyticsView from '@/src/app/(app)/app/views/AnalyticsView';
+import HistoryView from '@/src/app/(app)/app/views/HistoryView'; // ✅ NEW
 import type { Permission } from '@/types/permission';
 
 export const dynamic = 'force-dynamic';
@@ -18,6 +19,7 @@ const VIEW_PERMISSIONS: Record<View, Permission> = {
   'transfer-requests': 'transfer:read',
   branches: 'users:manage',
   analytics: 'admin:view_analytics',
+  history: 'inventory:read', // ✅ NEW: ดูประวัติ/เหตุการณ์ ต้องอ่าน inventory ได้
 };
 
 export default async function AppPage({ searchParams }: { searchParams: { view?: string } }) {
@@ -26,7 +28,7 @@ export default async function AppPage({ searchParams }: { searchParams: { view?:
 
   const currentView: View = (searchParams.view as View | undefined) ?? 'inventory';
 
-  // สร้าง allowedViews จาก permission ใหม่
+  // คำนวณ allowedViews ตาม permission ปัจจุบัน
   const allowedViews: View[] = [];
   for (const v of Object.keys(VIEW_PERMISSIONS) as View[]) {
     if (await hasPermission(me, VIEW_PERMISSIONS[v])) {
@@ -39,8 +41,7 @@ export default async function AppPage({ searchParams }: { searchParams: { view?:
 
   const canWriteInventory = await hasPermission(me, 'inventory:write');
 
-  // ---------- แก้ตรงนี้: map session.me → รูปแบบที่ AppShell ต้องการ ----------
-  // รองรับได้ทั้งโครงที่เป็น me.user.* (NextAuth) และฟิลด์แบนที่คุณเคยใช้
+  // ---------- map session.me → รูปที่ AppShell ต้องการ ----------
   type MaybeUser = {
     id?: string;
     uid?: string;
@@ -68,7 +69,7 @@ export default async function AppPage({ searchParams }: { searchParams: { view?:
     avatarUrl: m.user?.image ?? null,
     moderator: Boolean(m.moderator),
   };
-  // ---------------------------------------------------------------------------
+  // -------------------------------------------------------------
 
   return (
     <AppShell me={shellMe} allowedViews={allowedViews} currentView={currentView}>
@@ -82,6 +83,7 @@ export default async function AppPage({ searchParams }: { searchParams: { view?:
       {currentView === 'transfer-requests' && <TransferRequestsView />}
       {currentView === 'branches' && <BranchUsersView />}
       {currentView === 'analytics' && <AnalyticsView />}
+      {currentView === 'history' && <HistoryView />}{/* ✅ NEW */}
     </AppShell>
   );
 }

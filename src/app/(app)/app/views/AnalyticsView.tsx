@@ -245,9 +245,10 @@ function buildFallbackSummaryFromInventory(
 }
 
 /* ===================== Props ===================== */
+// ทำให้ props เป็น optional เพื่อให้ <AnalyticsView /> เรียกได้เลย
 interface AnalyticsProps {
-  inventory: GroupedProduct[];
-  loading: boolean;
+  inventory?: GroupedProduct[];
+  loading?: boolean;
 }
 
 /* --- helper: branch label --- */
@@ -263,7 +264,10 @@ function makeBranchLabel(selectedBranch: any, fallbackId: string | null) {
   ) as string;
 }
 
-export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
+export default function Analytics(props: AnalyticsProps = {}) {
+  // default props
+  const { inventory = [], loading = false } = props;
+
   const { selectedBranch, selectedBranchId, loading: branchLoading } = useBranch();
 
   const activeBranchId = selectedBranchId ?? null;
@@ -428,6 +432,8 @@ export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
   }
 
   // ---------- UI ----------
+  const { from: fFrom, to: fTo } = { from, to };
+
   return (
     <div className="space-y-6">
       {/* API error banner */}
@@ -443,7 +449,7 @@ export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
           <h1>Analytics &amp; Reports</h1>
           <p className="text-muted-foreground">Deep insights into your tire business performance</p>
           <p className="text-xs text-muted-foreground">
-            ช่วงเวลา: {from} – {to}
+            ช่วงเวลา: {fFrom} – {fTo}
           </p>
         </div>
 
@@ -472,7 +478,7 @@ export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
             onClick={() => {
               const rows: string[] = [];
               rows.push(`Branch,${branchLabel}`);
-              rows.push(`Period,${from} to ${to}`);
+              rows.push(`Period,${fFrom} to ${fTo}`);
               if (summary) {
                 rows.push(`totalInventoryValue,${summary.totalInventoryValue}`);
                 rows.push(`pendingTransfers,${summary.pendingTransfers}`);
@@ -502,7 +508,7 @@ export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
               const url = URL.createObjectURL(blob);
               const a = document.createElement('a');
               a.href = url;
-              a.download = `analytics_${activeBranchId ?? 'branch'}_${from}_${to}.csv`;
+              a.download = `analytics_${activeBranchId ?? 'branch'}_${fFrom}_${fTo}.csv`;
               a.click();
               URL.revokeObjectURL(url);
             }}
@@ -688,34 +694,8 @@ export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
-                  {inventoryTurnover.length === 0 && (
-                    <div className="text-sm text-muted-foreground">No movement breakdown from API yet.</div>
-                  )}
-                  {inventoryTurnover.map((item, index) => (
-                    <div key={index} className="flex items-center justify-between p-3 border rounded-lg">
-                      <div>
-                        <p className="font-medium">{item.product}</p>
-                        <p className="text-sm text-muted-foreground">{item.daysStock} days of stock</p>
-                      </div>
-                      <div className="text-right">
-                        <p className="font-medium">{item.turnover}x</p>
-                        <Badge
-                          variant={
-                            item.performance === 'excellent'
-                              ? 'default'
-                              : item.performance === 'good'
-                              ? 'secondary'
-                              : item.performance === 'average'
-                              ? 'outline'
-                              : 'destructive'
-                          }
-                          className="text-xs"
-                        >
-                          {item.performance}
-                        </Badge>
-                      </div>
-                    </div>
-                  ))}
+                  {/* ไม่มี movement breakdown จาก API ตอนนี้ */}
+                  <div className="text-sm text-muted-foreground">No movement breakdown from API yet.</div>
                 </div>
               </CardContent>
             </Card>
@@ -866,28 +846,8 @@ export default function Analytics({ inventory = [], loading }: AnalyticsProps) {
             </CardHeader>
             <CardContent>
               <div className="space-y-4">
-                {topSellingProducts.length === 0 && (
-                  <div className="text-sm text-muted-foreground">No product-level movement from API yet.</div>
-                )}
-                {topSellingProducts.map((product, index) => (
-                  <div key={index} className="flex items-center justify-between p-4 border rounded-lg">
-                    <div className="flex items-center space-x-4">
-                      <div className="w-8 h-8 bg-primary/10 rounded-lg flex items-center justify-center">
-                        <span className="font-medium text-primary">#{index + 1}</span>
-                      </div>
-                      <div>
-                        <p className="font-medium">{product.name}</p>
-                        <p className="text-sm text-muted-foreground">{NUM.format(product.units)} units moved</p>
-                      </div>
-                    </div>
-                    <div className="text-right">
-                      <div className="flex items-center space-x-1">
-                        <TrendingUp className="h-3 w-3 text-muted-foreground" />
-                        <span className="text-xs text-muted-foreground">trend</span>
-                      </div>
-                    </div>
-                  </div>
-                ))}
+                {/* ไม่มีข้อมูล movement ราย product ตอนนี้ */}
+                <div className="text-sm text-muted-foreground">No product-level movement from API yet.</div>
               </div>
             </CardContent>
           </Card>
