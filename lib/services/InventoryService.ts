@@ -1,4 +1,3 @@
-// File: src/lib/services/inventoryOrderService.ts
 import {
   addDoc,
   collection,
@@ -24,8 +23,8 @@ import {
 } from '@/types/events';
 
 /* =========================
- * Types
- * =======================*/
+ * Types
+ * =======================*/
 
 export type Dot = {
   dotCode: string;
@@ -201,8 +200,8 @@ export type StockMovementDoc = {
 };
 
 /* =========================
- * Utils
- * =======================*/
+ * Utils
+ * =======================*/
 export function slugifyId(s: string): string {
   return (s || '')
     .toString()
@@ -225,17 +224,19 @@ function specFromVariant(v: { size?: string; loadIndex?: string } | null | undef
 }
 
 async function resolveBrandId(storeId: string, brandIdOrName: string): Promise<string> {
+  const trimmedBrand = brandIdOrName.trim();
   const candidates = [
-    brandIdOrName,
-    brandIdOrName.toUpperCase(),
-    slugifyId(brandIdOrName),
-    brandIdOrName.toLowerCase(),
+    trimmedBrand,
+    trimmedBrand.toUpperCase(),
+    slugifyId(trimmedBrand),
+    trimmedBrand.toLowerCase(),
   ];
   for (const b of candidates) {
+    if (!b) continue;
     const snap = await getDoc(doc(db, 'stores', storeId, 'inventory', b));
     if (snap.exists()) return b;
   }
-  return brandIdOrName.toUpperCase();
+  return trimmedBrand.toUpperCase();
 }
 
 async function resolveModelId(
@@ -243,18 +244,20 @@ async function resolveModelId(
   brandIdResolved: string,
   modelIdOrName: string
 ): Promise<string> {
+  const trimmedModel = modelIdOrName.trim();
   const base = doc(db, 'stores', storeId, 'inventory', brandIdResolved);
   const candidates = [
-    modelIdOrName,
-    slugifyId(modelIdOrName),
-    modelIdOrName.toUpperCase(),
-    modelIdOrName.toLowerCase(),
+    trimmedModel,
+    slugifyId(trimmedModel),
+    trimmedModel.toUpperCase(),
+    trimmedModel.toLowerCase(),
   ];
   for (const m of candidates) {
+    if (!m) continue;
     const snap = await getDoc(doc(base, 'models', m));
     if (snap.exists()) return m;
   }
-  return slugifyId(modelIdOrName);
+  return slugifyId(trimmedModel);
 }
 
 async function resolveCanonicalIds(
@@ -268,10 +271,9 @@ async function resolveCanonicalIds(
 }
 
 /* =========================
- * Audit helper (ใช้ type กลาง)
- * =======================*/
+ * Audit helper (ใช้ type กลาง)
+ * =======================*/
 
-/** เขียน log แบบรวม schema เดิม (type/qtyChange/...) และเพิ่ม eventType สำหรับหน้า History ใหม่ */
 async function logMovement(payload: {
   branchId: string;
   type: StockMovementType;
@@ -330,8 +332,8 @@ async function logOrderEvent(payload: {
 }
 
 /* =========================
- * Store Service
- * =======================*/
+ * Store Service
+ * =======================*/
 export const StoreService = {
   async getAllStores(): Promise<Record<string, string>> {
     const r = await fetch('/api/branches/visible', { cache: 'no-store' });
@@ -354,13 +356,14 @@ export const StoreService = {
     const ref = doc(db, 'stores', storeId);
     await setDoc(ref, {
       ...payload,
-      phone: payload.phone ?? null,
-      email: payload.email ?? null,
-      lineId: payload.lineId ?? null,
+      branchName: payload.branchName.trim(),
+      phone: payload.phone?.trim() ?? null,
+      email: payload.email?.trim().toLowerCase() ?? null,
+      lineId: payload.lineId?.trim() ?? null,
       address: payload.address ?? {},
       location: payload.location ?? {},
       services: payload.services ?? [],
-      notes: payload.notes ?? null,
+      notes: payload.notes?.trim() ?? null,
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     });
@@ -368,8 +371,15 @@ export const StoreService = {
 
   async updateStore(storeId: string, patch: Partial<StoreDoc>): Promise<void> {
     const ref = doc(db, 'stores', storeId);
+    const normalizedPatch: Partial<StoreDoc> = { ...patch };
+    if (patch.branchName) normalizedPatch.branchName = patch.branchName.trim();
+    if (patch.phone) normalizedPatch.phone = patch.phone.trim();
+    if (patch.email) normalizedPatch.email = patch.email.trim().toLowerCase();
+    if (patch.lineId) normalizedPatch.lineId = patch.lineId.trim();
+    if (patch.notes) normalizedPatch.notes = patch.notes.trim();
+
     await updateDoc(ref, {
-      ...patch,
+      ...normalizedPatch,
       updatedAt: serverTimestamp(),
     });
   },
@@ -397,25 +407,29 @@ export const StoreService = {
 };
 
 /* =========================
- * Inventory Service
- * =======================*/
+ * Inventory Service
+ * =======================*/
 export const InventoryService = {
   /* ---------- Ensure helpers (canonical) ---------- */
 
   async ensureBrandDoc(storeId: string, brandName: string): Promise<{ brandId: string }> {
-    const brandId = await resolveBrandId(storeId, brandName);
+    const normalizedBrandName = brandName.trim();
+    if (!normalizedBrandName) throw new Error('Brand name cannot be empty.');
+    
+    const brandId = await resolveBrandId(storeId, normalizedBrandName);
     const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
     const snap = await getDoc(brandRef);
+    
     if (!snap.exists()) {
       await setDoc(brandRef, {
-        brandName,
+        brandName: normalizedBrandName,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
       const cur = (snap.data() as any)?.brandName;
-      if (cur !== brandName && brandName) {
-        await updateDoc(brandRef, { brandName, updatedAt: serverTimestamp() });
+      if (cur !== normalizedBrandName) {
+        await updateDoc(brandRef, { brandName: normalizedBrandName, updatedAt: serverTimestamp() });
       }
     }
     return { brandId };
@@ -426,29 +440,25 @@ export const InventoryService = {
     brandIdOrName: string,
     modelName: string
   ): Promise<{ brandId: string; modelId: string }> {
-    const brandId = await resolveBrandId(storeId, brandIdOrName);
-    const brandRef = doc(db, 'stores', storeId, 'inventory', brandId);
-    if (!(await getDoc(brandRef)).exists()) {
-      await setDoc(brandRef, {
-        brandName: brandIdOrName,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    }
+    const normalizedModelName = modelName.trim();
+    if (!normalizedModelName) throw new Error('Model name cannot be empty.');
+    
+    const { brandId } = await this.ensureBrandDoc(storeId, brandIdOrName);
 
-    const modelId = await resolveModelId(storeId, brandId, modelName);
-    const modelRef = doc(brandRef, 'models', modelId);
+    const modelId = await resolveModelId(storeId, brandId, normalizedModelName);
+    const modelRef = doc(db, 'stores', storeId, 'inventory', brandId, 'models', modelId);
     const m = await getDoc(modelRef);
+    
     if (!m.exists()) {
       await setDoc(modelRef, {
-        modelName,
+        modelName: normalizedModelName,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
     } else {
       const cur = (m.data() as any)?.modelName;
-      if (cur !== modelName && modelName) {
-        await updateDoc(modelRef, { modelName, updatedAt: serverTimestamp() });
+      if (cur !== normalizedModelName) {
+        await updateDoc(modelRef, { modelName: normalizedModelName, updatedAt: serverTimestamp() });
       }
     }
     return { brandId, modelId };
@@ -466,21 +476,27 @@ export const InventoryService = {
 
     const vRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId, 'variants', variantId);
     const v = await getDoc(vRef);
+    
+    const normalizedSize = init?.size?.trim() ?? null;
+    const normalizedLoadIndex = init?.loadIndex?.trim() ?? null;
+
     if (!v.exists()) {
       await setDoc(vRef, {
-        size: init?.size ?? null,
-        loadIndex: init?.loadIndex ?? null,
+        size: normalizedSize,
+        loadIndex: normalizedLoadIndex,
         basePrice: init?.basePrice ?? null,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-    } else if (init && (init.size || init.loadIndex || typeof init.basePrice === 'number')) {
-      await updateDoc(vRef, {
-        ...(init.size !== undefined ? { size: init.size } : {}),
-        ...(init.loadIndex !== undefined ? { loadIndex: init.loadIndex } : {}),
-        ...(init.basePrice !== undefined ? { basePrice: init.basePrice } : {}),
-        updatedAt: serverTimestamp(),
-      });
+    } else if (init) {
+        const updatePayload: any = { updatedAt: serverTimestamp() };
+        if (init.size !== undefined) updatePayload.size = normalizedSize;
+        if (init.loadIndex !== undefined) updatePayload.loadIndex = normalizedLoadIndex;
+        if (init.basePrice !== undefined) updatePayload.basePrice = init.basePrice;
+        
+        if (Object.keys(updatePayload).length > 1) {
+            await updateDoc(vRef, updatePayload);
+        }
     }
     return { brandId: bId, modelId: mId, variantId };
   },
@@ -507,7 +523,6 @@ export const InventoryService = {
         updatedAt: serverTimestamp(),
       });
 
-      // Log: ถ้ามี qty เริ่มต้น => in
       if (qtyInit > 0) {
         await logMovement({
           branchId: storeId,
@@ -523,7 +538,6 @@ export const InventoryService = {
     } else if (init) {
       const updatePayload: any = { updatedAt: serverTimestamp() };
       if (init.qty !== undefined) {
-        // set เป็นค่าใหม่ → มองว่าเป็น adjustment จากค่าปัจจุบัน
         const curQty = Number((d.data() as any)?.qty || 0);
         const newQty = Math.max(0, init.qty);
         const delta = newQty - curQty;
@@ -544,7 +558,9 @@ export const InventoryService = {
       if (init.promoPrice !== undefined) {
         updatePayload.promoPrice = init.promoPrice;
       }
-      await updateDoc(dRef, updatePayload);
+      if (Object.keys(updatePayload).length > 1) {
+        await updateDoc(dRef, updatePayload);
+      }
     }
   },
 
@@ -632,7 +648,7 @@ export const InventoryService = {
   },
 
   async fetchInventory(): Promise<GroupedProduct[]> {
-    throw new Error('InventoryService.fetchInventory() ถูกยกเลิก — โปรดใช้ fetchInventoryFor(allowedBranchIds) แทน');
+    throw new Error('InventoryService.fetchInventory() has been deprecated. Use fetchInventoryFor(allowedBranchIds) instead.');
   },
 
   async fetchInventoryFor(branchIds: string[]): Promise<GroupedProduct[]> {
@@ -659,14 +675,13 @@ export const InventoryService = {
           }
         }
       } catch {
-        // สาขานี้อ่านไม่ได้ — ข้าม
+        // Could not read this branch, skip.
       }
     }
 
     return Array.from(productMap.values());
   },
 
-  // +++ เพิ่มฟังก์ชันที่ขาดหายไปตรงนี้ +++
   async getNetworkInventory(currentBranchId: string, allBranches: Branch[]): Promise<GroupedProduct[]> {
     if (!currentBranchId || !allBranches || allBranches.length === 0) {
       return [];
@@ -677,7 +692,6 @@ export const InventoryService = {
 
     return this.fetchInventoryFor(otherBranchIds);
   },
-  // +++ สิ้นสุดส่วนที่เพิ่ม +++
 
   parseProductInfo(product: GroupedProduct, branchId: string, variantId: string, dotCode: string) {
     const parts = (product.id || '').split('-');
@@ -728,7 +742,6 @@ export const InventoryService = {
       updatedAt: serverTimestamp(),
     });
 
-    // LOG
     await logMovement({
       branchId: storeId,
       type: qtyChange >= 0 ? 'in' : 'out',
@@ -767,7 +780,6 @@ export const InventoryService = {
       updatedAt: serverTimestamp(),
     });
 
-    // LOG: initial receive
     if (qtyInit > 0) {
       await logMovement({
         branchId: storeId,
@@ -801,7 +813,6 @@ export const InventoryService = {
       updatedAt: serverTimestamp(),
     });
 
-    // LOG: adjustment (qtyChange=0) เพื่อบันทึกว่าเกิดการเปลี่ยนราคา
     await logMovement({
       branchId: storeId,
       type: 'adjust',
@@ -828,7 +839,6 @@ export const InventoryService = {
     const d = await getDoc(dRef);
     if (!d.exists()) throw new Error(`DOT ${dotCode} not found`);
 
-    // LOG: ถ้ามีคงเหลือ ให้บันทึกเป็น adjust ออกทั้งหมด
     const curQty = Number((d.data() as any)?.qty || 0);
     if (curQty !== 0) {
       await logMovement({
@@ -856,18 +866,24 @@ export const InventoryService = {
     const mId = await resolveModelId(storeId, bId, modelId);
 
     if (updates.brandName) {
-      const bRef = doc(db, 'stores', storeId, 'inventory', bId);
-      await updateDoc(bRef, {
-        brandName: updates.brandName,
-        updatedAt: serverTimestamp(),
-      });
+      const normalizedBrandName = updates.brandName.trim();
+      if(normalizedBrandName) {
+        const bRef = doc(db, 'stores', storeId, 'inventory', bId);
+        await updateDoc(bRef, {
+          brandName: normalizedBrandName,
+          updatedAt: serverTimestamp(),
+        });
+      }
     }
     if (updates.modelName) {
-      const mRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId);
-      await updateDoc(mRef, {
-        modelName: updates.modelName,
-        updatedAt: serverTimestamp(),
-      });
+        const normalizedModelName = updates.modelName.trim();
+        if(normalizedModelName) {
+            const mRef = doc(db, 'stores', storeId, 'inventory', bId, 'models', mId);
+            await updateDoc(mRef, {
+                modelName: normalizedModelName,
+                updatedAt: serverTimestamp(),
+            });
+        }
     }
   },
 
@@ -926,8 +942,8 @@ export const InventoryService = {
 };
 
 /* =========================
- * Notification Service
- * =======================*/
+ * Notification Service
+ * =======================*/
 export const NotificationService = {
   async createNotification(payload: {
     branchId: string;
@@ -951,8 +967,8 @@ export const NotificationService = {
 };
 
 /* =========================
- * Order Service — canonical IDs + LOG
- * =======================*/
+ * Order Service — canonical IDs + LOG
+ * =======================*/
 export const OrderService = {
   async createOrder(payload: {
     buyerBranchId: string;
@@ -976,7 +992,6 @@ export const OrderService = {
     };
     const ref = await addDoc(collection(db, 'orders'), orderData);
 
-    // LOG: order.requested (ทั้งสองฝั่ง)
     await logOrderEvent({
       branchId: payload.sellerBranchId,
       orderId: ref.id,
@@ -1129,7 +1144,6 @@ export const OrderService = {
         tx.update(dotRef, { qty: increment(-item.quantity), updatedAt: serverTimestamp() });
       });
 
-      // LOG: transfer_out (ฝั่งผู้ขาย)
       await logMovement({
         branchId: order.sellerBranchId,
         type: 'transfer_out',
@@ -1201,7 +1215,6 @@ export const OrderService = {
         item.quantity
       );
 
-      // LOG: transfer_in (ฝั่งผู้ซื้อ)
       await logMovement({
         branchId: order.buyerBranchId,
         type: 'transfer_in',
@@ -1230,7 +1243,6 @@ export const OrderService = {
   },
 
   async deliverTransfer(orderId: string): Promise<void> {
-    // ใช้ flow ship (ในระบบนี้ deliver == ship)
     return this.shipTransfer(orderId);
   },
 
@@ -1259,8 +1271,8 @@ export const OrderService = {
 };
 
 /* =========================
- * Export default
- * =======================*/
+ * Export default
+ * =======================*/
 export default {
   StoreService,
   InventoryService,
